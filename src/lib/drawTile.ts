@@ -1,7 +1,10 @@
 import type { MapEditor } from './mapeditor';
+import type { ReactiveMapEditor } from './MapEditor.svelte';
+
+type EditorType = MapEditor | ReactiveMapEditor;
 
 // Action to draw tiles on canvas
-export function drawTile(node: HTMLCanvasElement, { editor, tileIndex }: { editor: MapEditor, tileIndex: number }) {
+export function drawTile(node: HTMLCanvasElement, { editor, tileIndex }: { editor: EditorType, tileIndex: number }) {
     function draw() {
         const ctx = node.getContext('2d');
         if (!ctx || !editor) return;
@@ -21,7 +24,7 @@ export function drawTile(node: HTMLCanvasElement, { editor, tileIndex }: { edito
     draw();
 
     return {
-        update(params: { editor: MapEditor, tileIndex: number }) {
+        update(params: { editor: EditorType, tileIndex: number }) {
             // Update parameters
             editor = params.editor;
             tileIndex = params.tileIndex;

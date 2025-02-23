@@ -1,27 +1,20 @@
 import { Tilemap } from './tilemap';
 import { floodFill } from './floodfill';
+import type { MapData, MapDimensions, CustomBrush } from './types/map';
+import { createEmptyMap, cloneMapData, validateMapDimensions } from './types/map';
+import type { Point, Rect } from './utils/coordinates';
+import { screenToMap, mapToScreen, isInMapBounds, getBrushArea, calculateMapCenter } from './utils/coordinates';
+import { generateBrushId, createBrushPreview, calculateBrushPattern, createEmptyBrushPattern } from './utils/brush';
+import { findClosestZoomLevel, calculateZoomTransform, type ZoomLevel } from './utils/zoom';
+import { createMapMetadata, unpackMapData } from './utils/serialization';
+import type { ResizeAlignment } from './types/map';
 
-// Alignment options for resizing
-export const ALIGNMENTS = ['top-left', 'top-center', 'top-right',
-                   'middle-left', 'middle-center', 'middle-right',
-                   'bottom-left', 'bottom-center', 'bottom-right'] as const;
-export type ResizeAlignment = typeof ALIGNMENTS[number];
-
-// Custom brush types
-export interface CustomBrush {
-    id: string;
-    name: string | null;  // Make name optional
-    tiles: number[][];  // 2D array of tile indices
-    width: number;
-    height: number;
-    preview: HTMLCanvasElement | null;
-}
-
+export type { ResizeAlignment };
 export class MapEditor {
     canvas!: HTMLCanvasElement;
     ctx!: CanvasRenderingContext2D;
     tilemap!: Tilemap;
-    mapData!: number[][][];
+    mapData!: MapData;
     selectedTile: number = 0;
     currentLayer: number = 0;
     readonly MAX_LAYERS = 10;
@@ -44,9 +37,9 @@ export class MapEditor {
     };
 
     // For zooming
-    zoomLevel: number = 1;
-    minZoom: number = 0.25;
-    maxZoom: number = 4;
+    zoomLevel: ZoomLevel = 1;
+    minZoom: ZoomLevel = 0.25;
+    maxZoom: ZoomLevel = 4;
 
     // For painting
     isPainting: boolean = false;
@@ -58,8 +51,8 @@ export class MapEditor {
     private numberTimeout: number | null = null;
 
     // For undo
-    undoStack: number[][][][] = [];
-    redoStack: number[][][][] = [];
+    undoStack: MapData[] = [];
+    redoStack: MapData[] = [];
     maxUndoSteps: number = 50;
 
     // For brush size
@@ -82,6 +75,9 @@ export class MapEditor {
     isCustomBrushMode: boolean = false;
     useWorldAlignedRepeat: boolean = false;
 
+    // For layer management
+    private layerVisibility: boolean[] = Array(this.MAX_LAYERS).fill(true);
+
     constructor(canvas: HTMLCanvasElement, width: number = 20, height: number = 15) {
         this.canvas = canvas;
         this.ctx = canvas.getContext("2d")!;
@@ -90,11 +86,10 @@ export class MapEditor {
         this.tilemap = new Tilemap(this.tilemapUrl, this.tileWidth, this.tileHeight, this.tileSpacing);
         
         // Initialize empty map data with layers
-        this.mapData = this.createEmptyMap(width, height);
+        this.mapData = createEmptyMap(width, height, this.MAX_LAYERS);
         
         // Initialize undo stack with initial state
-        const initialState = this.mapData.map(layer => layer.map(row => [...row]));
-        this.undoStack = [initialState];
+        this.undoStack = [cloneMapData(this.mapData)];
         this.redoStack = [];
 
         // Add wheel event listener
@@ -104,17 +99,10 @@ export class MapEditor {
         requestAnimationFrame(this.updatePanning.bind(this));
     }
 
-    private createEmptyMap(width: number, height: number): number[][][] {
-        // Create an array of layers, each layer being a 2D array filled with -1 (empty)
-        return Array(this.MAX_LAYERS).fill(0).map(() => 
-            Array(height).fill(0).map(() => Array(width).fill(-1))
-        );
-    }
-
     // Resize the map, preserving existing content where possible
     resizeMap(newWidth: number, newHeight: number, alignment: ResizeAlignment = 'middle-center') {
         // Validate dimensions
-        if (newWidth < 1 || newHeight < 1) {
+        if (!validateMapDimensions(newWidth, newHeight)) {
             throw new Error('Map dimensions must be positive numbers');
         }
 
@@ -122,14 +110,11 @@ export class MapEditor {
         this.saveToUndoStack();
 
         // Store the old map data (deep copy)
-        const oldMap = this.mapData.map(layer => layer.map(row => [...row]));
-        const oldWidth = oldMap[0][0].length;
-        const oldHeight = oldMap[0].length;  // Fix: use first layer's height
+        const oldMap = cloneMapData(this.mapData);
+        const oldDimensions = { width: oldMap[0][0].length, height: oldMap[0].length };
 
         // Create new map with new dimensions
-        const newMap = Array(this.MAX_LAYERS).fill(0).map(() => 
-            Array(newHeight).fill(0).map(() => Array(newWidth).fill(-1))
-        );
+        const newMap = createEmptyMap(newWidth, newHeight, this.MAX_LAYERS);
 
         // Calculate offsets based on alignment
         let offsetX = 0;
@@ -141,10 +126,10 @@ export class MapEditor {
                 offsetX = 0;
                 break;
             case alignment.includes('center'):
-                offsetX = Math.floor((newWidth - oldWidth) / 2);
+                offsetX = Math.floor((newWidth - oldDimensions.width) / 2);
                 break;
             case alignment.includes('right'):
-                offsetX = newWidth - oldWidth;
+                offsetX = newWidth - oldDimensions.width;
                 break;
         }
 
@@ -154,43 +139,41 @@ export class MapEditor {
                 offsetY = 0;
                 break;
             case alignment.includes('middle'):
-                offsetY = Math.floor((newHeight - oldHeight) / 2);
+                offsetY = Math.floor((newHeight - oldDimensions.height) / 2);
                 break;
             case alignment.includes('bottom'):
-                offsetY = newHeight - oldHeight;
+                offsetY = newHeight - oldDimensions.height;
                 break;
         }
 
         // Ensure offsets don't cause content loss when shrinking
-        if (newWidth < oldWidth) {
+        if (newWidth < oldDimensions.width) {
             if (alignment.includes('center')) {
-                offsetX = Math.floor((newWidth - oldWidth) / 2);
+                offsetX = Math.floor((newWidth - oldDimensions.width) / 2);
             } else if (alignment.includes('right')) {
-                offsetX = newWidth - oldWidth;
+                offsetX = newWidth - oldDimensions.width;
             }
-            // Clamp offsetX to ensure maximum content preservation
-            offsetX = Math.max(-(oldWidth - newWidth), Math.min(0, offsetX));
+            offsetX = Math.max(-(oldDimensions.width - newWidth), Math.min(0, offsetX));
         }
 
-        if (newHeight < oldHeight) {
+        if (newHeight < oldDimensions.height) {
             if (alignment.includes('middle')) {
-                offsetY = Math.floor((newHeight - oldHeight) / 2);
+                offsetY = Math.floor((newHeight - oldDimensions.height) / 2);
             } else if (alignment.includes('bottom')) {
-                offsetY = newHeight - oldHeight;
+                offsetY = newHeight - oldDimensions.height;
             }
-            // Clamp offsetY to ensure maximum content preservation
-            offsetY = Math.max(-(oldHeight - newHeight), Math.min(0, offsetY));
+            offsetY = Math.max(-(oldDimensions.height - newHeight), Math.min(0, offsetY));
         }
 
         // Copy existing data to new map
         for (let layer = 0; layer < this.MAX_LAYERS; layer++) {
-            for (let y = 0; y < oldHeight; y++) {
-                for (let x = 0; x < oldWidth; x++) {
+            for (let y = 0; y < oldDimensions.height; y++) {
+                for (let x = 0; x < oldDimensions.width; x++) {
                     const newX = x + offsetX;
                     const newY = y + offsetY;
                     
                     // Only copy if the new position is within bounds
-                    if (newX >= 0 && newX < newWidth && newY >= 0 && newY < newHeight) {
+                    if (isInMapBounds(newX, newY, { width: newWidth, height: newHeight })) {
                         newMap[layer][newY][newX] = oldMap[layer][y][x];
                     }
                 }
@@ -202,7 +185,7 @@ export class MapEditor {
     }
 
     // Get current map dimensions
-    getMapDimensions(): { width: number; height: number } {
+    getMapDimensions(): MapDimensions {
         return {
             width: this.mapData[0][0].length,
             height: this.mapData[0].length
@@ -211,15 +194,13 @@ export class MapEditor {
 
     // Create a new empty map
     newMap(width: number, height: number) {
-        // Validate dimensions
-        if (width < 1 || height < 1) {
+        if (!validateMapDimensions(width, height)) {
             throw new Error('Map dimensions must be positive numbers');
         }
 
-        this.mapData = this.createEmptyMap(width, height);
+        this.mapData = createEmptyMap(width, height, this.MAX_LAYERS);
         // Initialize undo stack with new empty state
-        const initialState = this.mapData.map(layer => layer.map(row => [...row]));
-        this.undoStack = [initialState];
+        this.undoStack = [cloneMapData(this.mapData)];
         this.redoStack = [];
         this.centerMap();
     }
@@ -241,10 +222,16 @@ export class MapEditor {
     }
 
     centerMap() {
-        const mapWidthPx = this.mapData[0][0].length * this.tilemap.tileWidth;
-        const mapHeightPx = this.mapData[0].length * this.tilemap.tileHeight;
-        this.offsetX = (this.canvas.width - mapWidthPx) / 2;
-        this.offsetY = (this.canvas.height - mapHeightPx) / 2;
+        const center = calculateMapCenter(
+            this.canvas.width,
+            this.canvas.height,
+            this.mapData[0][0].length,
+            this.mapData[0].length,
+            this.tilemap.tileWidth,
+            this.tilemap.tileHeight
+        );
+        this.offsetX = center.x;
+        this.offsetY = center.y;
     }
 
     update() {
@@ -270,19 +257,22 @@ export class MapEditor {
 
         // Draw each layer from bottom to top
         for (let layer = 0; layer < this.MAX_LAYERS; layer++) {
+            // Skip hidden layers
+            if (!this.layerVisibility[layer]) continue;
+
             // If showing all layers or this is the current layer, use full opacity
             this.ctx.globalAlpha = this.currentLayer === -1 || layer === this.currentLayer ? 1.0 : 0.3;
             
-            for (let y = 0; y < this.mapData[layer].length; y++) {
-                for (let x = 0; x < this.mapData[layer][y].length; x++) {
+            const dimensions = this.getMapDimensions();
+            for (let y = 0; y < dimensions.height; y++) {
+                for (let x = 0; x < dimensions.width; x++) {
                     const tileIndex = this.mapData[layer][y][x];
                     if (tileIndex === -1) continue; // Skip empty tiles
                     
                     const tile = this.tilemap.getTile(tileIndex);
                     if (tile) {
-                        const drawX = x * this.tilemap.tileWidth;
-                        const drawY = y * this.tilemap.tileHeight;
-                        this.ctx.drawImage(tile, drawX, drawY);
+                        const screenPos = mapToScreen(x, y, 0, 0, 1, this.tilemap.tileWidth, this.tilemap.tileHeight);
+                        this.ctx.drawImage(tile, screenPos.x, screenPos.y);
                     }
                 }
             }
@@ -300,8 +290,9 @@ export class MapEditor {
             return;
         }
 
-        const mapWidthPx = this.mapData[0][0].length * this.tilemap.tileWidth;
-        const mapHeightPx = this.mapData[0].length * this.tilemap.tileHeight;
+        const dimensions = this.getMapDimensions();
+        const mapWidthPx = dimensions.width * this.tilemap.tileWidth;
+        const mapHeightPx = dimensions.height * this.tilemap.tileHeight;
 
         this.ctx.save();
         this.ctx.translate(this.offsetX, this.offsetY);
@@ -311,20 +302,20 @@ export class MapEditor {
         this.ctx.lineWidth = 1 / this.zoomLevel; // Keep grid line width constant
 
         // Vertical lines
-        for (let x = 0; x <= this.mapData[0][0].length; x++) {
-            const drawX = x * this.tilemap.tileWidth;
+        for (let x = 0; x <= dimensions.width; x++) {
+            const screenPos = mapToScreen(x, 0, 0, 0, 1, this.tilemap.tileWidth, this.tilemap.tileHeight);
             this.ctx.beginPath();
-            this.ctx.moveTo(drawX, 0);
-            this.ctx.lineTo(drawX, mapHeightPx);
+            this.ctx.moveTo(screenPos.x, 0);
+            this.ctx.lineTo(screenPos.x, mapHeightPx);
             this.ctx.stroke();
         }
 
         // Horizontal lines
-        for (let y = 0; y <= this.mapData[0].length; y++) {
-            const drawY = y * this.tilemap.tileHeight;
+        for (let y = 0; y <= dimensions.height; y++) {
+            const screenPos = mapToScreen(0, y, 0, 0, 1, this.tilemap.tileWidth, this.tilemap.tileHeight);
             this.ctx.beginPath();
-            this.ctx.moveTo(0, drawY);
-            this.ctx.lineTo(mapWidthPx, drawY);
+            this.ctx.moveTo(0, screenPos.y);
+            this.ctx.lineTo(mapWidthPx, screenPos.y);
             this.ctx.stroke();
         }
 
@@ -353,92 +344,66 @@ export class MapEditor {
                 this.ctx.lineWidth = 2 / this.zoomLevel;
                 
                 filledPoints.forEach(point => {
-                    const startX = point.x * this.tilemap.tileWidth;
-                    const startY = point.y * this.tilemap.tileHeight;
-                    this.ctx.fillRect(startX, startY, this.tilemap.tileWidth, this.tilemap.tileHeight);
-                    this.ctx.strokeRect(startX, startY, this.tilemap.tileWidth, this.tilemap.tileHeight);
+                    const screenPos = mapToScreen(
+                        point.x,
+                        point.y,
+                        0,
+                        0,
+                        1,
+                        this.tilemap.tileWidth,
+                        this.tilemap.tileHeight
+                    );
+                    this.ctx.fillRect(
+                        screenPos.x,
+                        screenPos.y,
+                        this.tilemap.tileWidth,
+                        this.tilemap.tileHeight
+                    );
+                    this.ctx.strokeRect(
+                        screenPos.x,
+                        screenPos.y,
+                        this.tilemap.tileWidth,
+                        this.tilemap.tileHeight
+                    );
                 });
             } else if (this.isCustomBrushMode && this.selectedCustomBrush) {
                 const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
                 
                 // Calculate target dimensions based on brush size
-                const targetWidth = this.brushSize;
-                const targetHeight = this.brushSize;
+                const targetArea = getBrushArea(this.hoverX, this.hoverY, this.brushSize);
                 
-                // Calculate the starting position to center the brush
-                const startX = this.hoverX - Math.floor(targetWidth / 2);
-                const startY = this.hoverY - Math.floor(targetHeight / 2);
-
-                // Calculate region sizes for 9-slice scaling
-                const leftWidth = Math.min(brushWidth, 1);
-                const rightWidth = Math.min(brushWidth - leftWidth, 1);
-                const centerWidth = Math.max(0, brushWidth - leftWidth - rightWidth);
-
-                const topHeight = Math.min(brushHeight, 1);
-                const bottomHeight = Math.min(brushHeight - topHeight, 1);
-                const centerHeight = Math.max(0, brushHeight - topHeight - bottomHeight);
-
-                // Calculate repeat origin based on world position or brush position
-                const repeatOriginX = this.useWorldAlignedRepeat ? 
-                    ((startX % centerWidth) + centerWidth) % centerWidth :
-                    0;
-                const repeatOriginY = this.useWorldAlignedRepeat ? 
-                    ((startY % centerHeight) + centerHeight) % centerHeight :
-                    0;
+                // Calculate brush pattern
+                const pattern = calculateBrushPattern(
+                    targetArea,
+                    { width: brushWidth, height: brushHeight },
+                    this.useWorldAlignedRepeat
+                );
 
                 // Draw semi-transparent preview
                 this.ctx.globalAlpha = 0.5;
 
-                // Draw preview tiles using 9-slice scaling
-                for (let ty = 0; ty < targetHeight; ty++) {
-                    for (let tx = 0; tx < targetWidth; tx++) {
-                        const worldX = startX + tx;
-                        const worldY = startY + ty;
+                // Draw preview tiles using pattern
+                for (let ty = 0; ty < targetArea.height; ty++) {
+                    for (let tx = 0; tx < targetArea.width; tx++) {
+                        const worldX = targetArea.x + tx;
+                        const worldY = targetArea.y + ty;
 
-                        if (worldX >= 0 && worldX < this.mapData[0][0].length && 
-                            worldY >= 0 && worldY < this.mapData[0].length) {
-                            
-                            // Determine which region of the brush to use
-                            let sourceX: number;
-                            let sourceY: number;
-
-                            // Map x position to source region
-                            if (tx < leftWidth) {
-                                // Left region
-                                sourceX = tx;
-                            } else if (tx >= targetWidth - rightWidth) {
-                                // Right region
-                                sourceX = brushWidth - (targetWidth - tx);
-                            } else {
-                                // Center region - tile the middle section with offset
-                                sourceX = leftWidth + ((tx - leftWidth + repeatOriginX) % centerWidth);
-                            }
-
-                            // Map y position to source region
-                            if (ty < topHeight) {
-                                // Top region
-                                sourceY = ty;
-                            } else if (ty >= targetHeight - bottomHeight) {
-                                // Bottom region
-                                sourceY = brushHeight - (targetHeight - ty);
-                            } else {
-                                // Center region - tile the middle section with offset
-                                sourceY = topHeight + ((ty - topHeight + repeatOriginY) % centerHeight);
-                            }
-
-                            // Clamp to brush dimensions
-                            sourceX = Math.min(sourceX, brushWidth - 1);
-                            sourceY = Math.min(sourceY, brushHeight - 1);
-
+                        if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
+                            const { sourceX, sourceY } = pattern[ty][tx];
                             const tileIndex = tiles[sourceY][sourceX];
                             if (tileIndex !== -1) {
                                 const tile = this.tilemap.getTile(tileIndex);
                                 if (tile) {
-                                    this.ctx.drawImage(
-                                        tile,
-                                        worldX * this.tilemap.tileWidth,
-                                        worldY * this.tilemap.tileHeight
+                                    const screenPos = mapToScreen(
+                                        worldX,
+                                        worldY,
+                                        0,
+                                        0,
+                                        1,
+                                        this.tilemap.tileWidth,
+                                        this.tilemap.tileHeight
                                     );
+                                    this.ctx.drawImage(tile, screenPos.x, screenPos.y);
                                 }
                             }
                         }
@@ -448,32 +413,54 @@ export class MapEditor {
                 this.ctx.globalAlpha = 1.0;
 
                 // Draw border around the entire brush area
+                const startPos = mapToScreen(
+                    targetArea.x,
+                    targetArea.y,
+                    0,
+                    0,
+                    1,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight
+                );
                 this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
                 this.ctx.lineWidth = 2 / this.zoomLevel;
                 this.ctx.strokeRect(
-                    startX * this.tilemap.tileWidth,
-                    startY * this.tilemap.tileHeight,
-                    targetWidth * this.tilemap.tileWidth,
-                    targetHeight * this.tilemap.tileHeight
+                    startPos.x,
+                    startPos.y,
+                    targetArea.width * this.tilemap.tileWidth,
+                    targetArea.height * this.tilemap.tileHeight
                 );
             } else {
                 // Regular brush preview
-                const brushOffsetX = Math.floor((this.brushSize - 1) / 2);
-                const brushOffsetY = Math.floor((this.brushSize - 1) / 2);
-                
-                const startX = (this.hoverX - brushOffsetX) * this.tilemap.tileWidth;
-                const startY = (this.hoverY - brushOffsetY) * this.tilemap.tileHeight;
-                const width = this.brushSize * this.tilemap.tileWidth;
-                const height = this.brushSize * this.tilemap.tileHeight;
+                const brushArea = getBrushArea(this.hoverX, this.hoverY, this.brushSize);
+                const startPos = mapToScreen(
+                    brushArea.x,
+                    brushArea.y,
+                    0,
+                    0,
+                    1,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight
+                );
 
                 // Draw semi-transparent fill
                 this.ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-                this.ctx.fillRect(startX, startY, width, height);
+                this.ctx.fillRect(
+                    startPos.x,
+                    startPos.y,
+                    brushArea.width * this.tilemap.tileWidth,
+                    brushArea.height * this.tilemap.tileHeight
+                );
 
                 // Draw border
                 this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
                 this.ctx.lineWidth = 2 / this.zoomLevel;
-                this.ctx.strokeRect(startX, startY, width, height);
+                this.ctx.strokeRect(
+                    startPos.x,
+                    startPos.y,
+                    brushArea.width * this.tilemap.tileWidth,
+                    brushArea.height * this.tilemap.tileHeight
+                );
             }
         }
 
@@ -612,21 +599,22 @@ export class MapEditor {
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
 
-        // Calculate world position before zoom
-        const worldX = (mouseX - this.offsetX) / this.zoomLevel;
-        const worldY = (mouseY - this.offsetY) / this.zoomLevel;
-
         // Update zoom level
         const zoomDelta = -e.deltaY * 0.001;
-        const newZoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.zoomLevel * (1 + zoomDelta)));
+        const newZoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.zoomLevel * (1 + zoomDelta))) as ZoomLevel;
         
         // Only proceed if zoom actually changed
         if (newZoom !== this.zoomLevel) {
-            this.zoomLevel = newZoom;
-
-            // Calculate new offset to keep the mouse position fixed
-            this.offsetX = mouseX - worldX * this.zoomLevel;
-            this.offsetY = mouseY - worldY * this.zoomLevel;
+            const transform = calculateZoomTransform(
+                newZoom,
+                this.zoomLevel,
+                { x: mouseX, y: mouseY },
+                { x: this.offsetX, y: this.offsetY }
+            );
+            
+            this.zoomLevel = transform.zoom as ZoomLevel;
+            this.offsetX = transform.offset.x;
+            this.offsetY = transform.offset.y;
 
             // Emit zoom change event
             const event = new CustomEvent('zoomchange', { detail: { zoomLevel: this.zoomLevel } });
@@ -762,20 +750,19 @@ export class MapEditor {
             return;
         }
 
-        // Convert mouse coordinates to world space
-        const worldX = (mouseX - this.offsetX) / this.zoomLevel;
-        const worldY = (mouseY - this.offsetY) / this.zoomLevel;
-        
-        // For even-sized brushes, offset by half a tile to center on intersection
-        const halfTileX = this.brushSize % 2 === 0 ? this.tilemap.tileWidth / 2 : 0;
-        const halfTileY = this.brushSize % 2 === 0 ? this.tilemap.tileHeight / 2 : 0;
-        
-        const mapX = Math.floor((worldX - halfTileX) / this.tilemap.tileWidth);
-        const mapY = Math.floor((worldY - halfTileY) / this.tilemap.tileHeight);
+        // Convert mouse coordinates to map coordinates
+        const mapPos = screenToMap(
+            mouseX,
+            mouseY,
+            this.offsetX,
+            this.offsetY,
+            this.zoomLevel,
+            this.tilemap.tileWidth,
+            this.tilemap.tileHeight,
+            this.brushSize % 2 === 0
+        );
 
-        if (mapX >= 0 && mapX < this.mapData[0][0].length && 
-            mapY >= 0 && mapY < this.mapData[0].length) {
-            
+        if (isInMapBounds(mapPos.x, mapPos.y, this.getMapDimensions())) {
             console.log('=== PAINT START ===');
 
             if (e.button === 0 || e.button === 2) { // Left or right click
@@ -784,7 +771,7 @@ export class MapEditor {
 
                 if (this.isFloodFillMode && e.button === 0) {
                     // Get the target value (the tile we're replacing)
-                    const targetValue = this.mapData[this.currentLayer][mapY][mapX];
+                    const targetValue = this.mapData[this.currentLayer][mapPos.y][mapPos.x];
                     
                     // Only flood fill if we're changing to a different tile
                     if (targetValue !== this.paintTile) {
@@ -794,8 +781,8 @@ export class MapEditor {
                         // Perform flood fill
                         const filledPoints = floodFill(
                             this.mapData[this.currentLayer],
-                            mapX,
-                            mapY,
+                            mapPos.x,
+                            mapPos.y,
                             targetValue,
                             this.paintTile
                         );
@@ -806,7 +793,7 @@ export class MapEditor {
                     }
                 } else {
                     // Use the new applyBrush method
-                    this.applyBrush(mapX, mapY, e.button === 2);
+                    this.applyBrush(mapPos.x, mapPos.y, e.button === 2);
                 }
             }
         }
@@ -832,23 +819,23 @@ export class MapEditor {
         this.lastPanX = mouseX;
         this.lastPanY = mouseY;
 
-        // Convert mouse coordinates to world space
-        const worldX = (mouseX - this.offsetX) / this.zoomLevel;
-        const worldY = (mouseY - this.offsetY) / this.zoomLevel;
-        
-        // For even-sized brushes, offset by half a tile to center on intersection
-        const halfTileX = this.brushSize % 2 === 0 ? this.tilemap.tileWidth / 2 : 0;
-        const halfTileY = this.brushSize % 2 === 0 ? this.tilemap.tileHeight / 2 : 0;
-        
-        const mapX = Math.floor((worldX - halfTileX) / this.tilemap.tileWidth);
-        const mapY = Math.floor((worldY - halfTileY) / this.tilemap.tileHeight);
+        // Convert mouse coordinates to map coordinates
+        const mapPos = screenToMap(
+            mouseX,
+            mouseY,
+            this.offsetX,
+            this.offsetY,
+            this.zoomLevel,
+            this.tilemap.tileWidth,
+            this.tilemap.tileHeight,
+            this.brushSize % 2 === 0
+        );
 
         // Update hover position for brush preview
         if (!this.isWithinPalette(mouseX, mouseY) && 
-            mapX >= 0 && mapX < this.mapData[0][0].length && 
-            mapY >= 0 && mapY < this.mapData[0].length) {
-            this.hoverX = mapX;
-            this.hoverY = mapY;
+            isInMapBounds(mapPos.x, mapPos.y, this.getMapDimensions())) {
+            this.hoverX = mapPos.x;
+            this.hoverY = mapPos.y;
         } else {
             this.hoverX = -1;
             this.hoverY = -1;
@@ -862,7 +849,7 @@ export class MapEditor {
             }
             
             // Use the new applyBrush method
-            this.applyBrush(mapX, mapY, this.paintTile === -1);
+            this.applyBrush(mapPos.x, mapPos.y, this.paintTile === -1);
         }
     }
 
@@ -888,11 +875,11 @@ export class MapEditor {
         tilemapCanvas.height = tilemapImage?.height || 0;
         const ctx = tilemapCanvas.getContext('2d');
         
-        let tilemapData = null;
+        let tilemapSettings = null;
         if (ctx && tilemapImage) {
             // Draw first, then get the data URL
             ctx.drawImage(tilemapImage, 0, 0);
-            tilemapData = {
+            tilemapSettings = {
                 imageData: tilemapCanvas.toDataURL('image/png'),
                 tileWidth: this.tileWidth,
                 tileHeight: this.tileHeight,
@@ -909,27 +896,12 @@ export class MapEditor {
             height: brush.height
         })) : [];
 
-        if (useCompression) {
-            return JSON.stringify({
-                version: 1,
-                format: 'binary',
-                mapData: this.packMapData(this.mapData),
-                tilemap: tilemapData,
-                customBrushes: customBrushesData
-            });
-        } else {
-            return JSON.stringify({
-                version: 1,
-                format: 'json',
-                mapData: {
-                    width: this.mapData[0][0].length,
-                    height: this.mapData[0].length,
-                    layers: this.mapData
-                },
-                tilemap: tilemapData,
-                customBrushes: customBrushesData
-            });
-        }
+        return JSON.stringify(createMapMetadata(
+            this.mapData,
+            tilemapSettings,
+            customBrushesData,
+            useCompression
+        ));
     }
 
     // Import map data
@@ -986,14 +958,14 @@ export class MapEditor {
         }
 
         // Handle map data based on format
-        let unpackedData: number[][][];
+        let unpackedData: MapData;
         try {
             console.log('Unpacking map data, format:', data.format);
             if (data.format === 'binary') {
                 if (typeof data.mapData !== 'string') {
                     throw new Error('Invalid binary map data format');
                 }
-                unpackedData = this.unpackMapData(data.mapData);
+                unpackedData = unpackMapData(data.mapData);
             } else {
                 // Handle JSON format
                 if (!data.mapData.width || !data.mapData.height || !data.mapData.layers) {
@@ -1047,7 +1019,7 @@ export class MapEditor {
             
             // Apply the previous state (which is now the top of the stack)
             const previousState = this.undoStack[this.undoStack.length - 1];
-            this.mapData = previousState.map(layer => layer.map(row => [...row]));
+            this.mapData = cloneMapData(previousState);
             
             console.log('After undo - undo stack:', this.undoStack.length, 'redo stack:', this.redoStack.length);
         }
@@ -1061,7 +1033,7 @@ export class MapEditor {
             
             const stateToRedo = this.redoStack.pop()!;
             this.undoStack.push(stateToRedo);
-            this.mapData = stateToRedo.map(layer => layer.map(row => [...row]));
+            this.mapData = cloneMapData(stateToRedo);
             
             console.log('After redo - undo stack:', this.undoStack.length, 'redo stack:', this.redoStack.length);
         }
@@ -1072,7 +1044,7 @@ export class MapEditor {
         console.log('=== SAVE STATE ===');
         console.log('Before save - undo stack:', this.undoStack.length, 'redo stack:', this.redoStack.length);
         
-        const currentState = this.mapData.map(layer => layer.map(row => [...row]));
+        const currentState = cloneMapData(this.mapData);
         this.undoStack.push(currentState);
         
         if (this.undoStack.length > this.maxUndoSteps) {
@@ -1268,22 +1240,21 @@ export class MapEditor {
             const mouseX = this.lastPanX;  // Use last known mouse position
             const mouseY = this.lastPanY;
 
-            // Convert to world space
-            const worldX = (mouseX - this.offsetX) / this.zoomLevel;
-            const worldY = (mouseY - this.offsetY) / this.zoomLevel;
+            // Convert to map coordinates
+            const mapPos = screenToMap(
+                mouseX,
+                mouseY,
+                this.offsetX,
+                this.offsetY,
+                this.zoomLevel,
+                this.tilemap.tileWidth,
+                this.tilemap.tileHeight,
+                this.brushSize % 2 === 0
+            );
             
-            // For even-sized brushes, offset by half a tile to center on intersection
-            const halfTileX = this.brushSize % 2 === 0 ? this.tilemap.tileWidth / 2 : 0;
-            const halfTileY = this.brushSize % 2 === 0 ? this.tilemap.tileHeight / 2 : 0;
-            
-            // Update hover position
-            const mapX = Math.floor((worldX - halfTileX) / this.tilemap.tileWidth);
-            const mapY = Math.floor((worldY - halfTileY) / this.tilemap.tileHeight);
-            
-            if (mapX >= 0 && mapX < this.mapData[0][0].length && 
-                mapY >= 0 && mapY < this.mapData[0].length) {
-                this.hoverX = mapX;
-                this.hoverY = mapY;
+            if (isInMapBounds(mapPos.x, mapPos.y, this.getMapDimensions())) {
+                this.hoverX = mapPos.x;
+                this.hoverY = mapPos.y;
             }
         }
     }
@@ -1363,7 +1334,7 @@ export class MapEditor {
         }
     }
 
-    private packMapData(mapData: number[][][]): any {
+    private packMapData(mapData: MapData): any {
         // Convert numbers to a more compact format
         const packLayers = mapData.map(layer => {
             const packed: number[] = [];
@@ -1415,7 +1386,7 @@ export class MapEditor {
         return btoa(String.fromCharCode(...bytes));
     }
 
-    private unpackMapData(base64Data: string): number[][][] {
+    private unpackMapData(base64Data: string): MapData {
         try {
             // Convert from base64 to binary
             const binaryString = atob(base64Data);
@@ -1435,7 +1406,7 @@ export class MapEditor {
             }
 
             // Read layer data
-            const layers: number[][][] = [];
+            const layers: MapData = [];
             let offset = headerSize;
 
             while (offset < data.length - 1) {  // Need at least 2 more values for a run
@@ -1478,109 +1449,68 @@ export class MapEditor {
         }
     }
 
-    // Custom brush methods
+    // Create a new custom brush
     createCustomBrush(name: string | null, tiles: number[][]): CustomBrush {
-        const id = `brush_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const height = tiles.length;
-        const width = tiles[0]?.length || 0;
-        
-        // Generate default name if none provided
-        const brushName = name || `${width}x${height} Brush`;
-        
-        // Create preview canvas
-        const preview = document.createElement('canvas');
-        preview.width = width * this.tilemap.tileWidth;
-        preview.height = height * this.tilemap.tileHeight;
-        const ctx = preview.getContext('2d');
-        
-        if (ctx) {
-            ctx.imageSmoothingEnabled = false;
-            // Draw each tile in the brush
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const tileIndex = tiles[y][x];
-                    if (tileIndex === -1) continue;
-                    
-                    const tile = this.tilemap.getTile(tileIndex);
-                    if (tile) {
-                        ctx.drawImage(
-                            tile,
-                            x * this.tilemap.tileWidth,
-                            y * this.tilemap.tileHeight
-                        );
-                    }
-                }
-            }
-        }
-
-        const brush: CustomBrush = {
-            id,
-            name: brushName,
+        const brush: Omit<CustomBrush, 'preview' | 'id'> = {
+            name: name || `${tiles[0].length}x${tiles.length} Brush`,
             tiles,
-            width,
-            height,
+            width: tiles[0]?.length || 0,
+            height: tiles.length
+        };
+
+        const preview = createBrushPreview(
+            brush,
+            (index) => this.tilemap.getTile(index),
+            this.tilemap.tileWidth,
+            this.tilemap.tileHeight
+        );
+
+        const customBrush: CustomBrush = {
+            ...brush,
+            id: generateBrushId(),
             preview
         };
 
-        this.customBrushes.push(brush);
-        return brush;
+        this.customBrushes.push(customBrush);
+        return customBrush;
     }
 
+    // Update an existing custom brush
     updateCustomBrush(brushId: string, name: string | null, tiles: number[][]): CustomBrush | null {
         const brushIndex = this.customBrushes.findIndex(b => b.id === brushId);
         if (brushIndex === -1) return null;
 
-        const height = tiles.length;
-        const width = tiles[0]?.length || 0;
-        
-        // Generate default name if none provided
-        const brushName = name || `${width}x${height} Brush`;
-        
-        // Create preview canvas
-        const preview = document.createElement('canvas');
-        preview.width = width * this.tilemap.tileWidth;
-        preview.height = height * this.tilemap.tileHeight;
-        const ctx = preview.getContext('2d');
-        
-        if (ctx) {
-            ctx.imageSmoothingEnabled = false;
-            // Draw each tile in the brush
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const tileIndex = tiles[y][x];
-                    if (tileIndex === -1) continue;
-                    
-                    const tile = this.tilemap.getTile(tileIndex);
-                    if (tile) {
-                        ctx.drawImage(
-                            tile,
-                            x * this.tilemap.tileWidth,
-                            y * this.tilemap.tileHeight
-                        );
-                    }
-                }
-            }
-        }
-
-        const brush: CustomBrush = {
-            id: brushId,
-            name: brushName,
+        const brush: Omit<CustomBrush, 'preview' | 'id'> = {
+            name: name || `${tiles[0].length}x${tiles.length} Brush`,
             tiles,
-            width,
-            height,
+            width: tiles[0]?.length || 0,
+            height: tiles.length
+        };
+
+        const preview = createBrushPreview(
+            brush,
+            (index) => this.tilemap.getTile(index),
+            this.tilemap.tileWidth,
+            this.tilemap.tileHeight
+        );
+
+        const customBrush: CustomBrush = {
+            ...brush,
+            id: brushId,
             preview
         };
 
-        this.customBrushes[brushIndex] = brush;
+        this.customBrushes[brushIndex] = customBrush;
         
         // If this brush was selected, update the selection
         if (this.selectedCustomBrush?.id === brushId) {
-            this.selectedCustomBrush = brush;
+            this.selectedCustomBrush = customBrush;
         }
 
-        return brush;
+        return customBrush;
     }
 
+    // Select a custom brush
     selectCustomBrush(brushId: string | null) {
         if (brushId === null) {
             this.selectedCustomBrush = null;
@@ -1595,6 +1525,7 @@ export class MapEditor {
         }
     }
 
+    // Delete a custom brush
     deleteCustomBrush(brushId: string) {
         const index = this.customBrushes.findIndex(b => b.id === brushId);
         if (index !== -1) {
@@ -1611,71 +1542,23 @@ export class MapEditor {
             const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
             
             // Calculate the target area dimensions based on brush size
-            const targetWidth = this.brushSize;
-            const targetHeight = this.brushSize;
+            const targetArea = getBrushArea(mapX, mapY, this.brushSize);
             
-            // Calculate the starting position to center the brush
-            const startX = mapX - Math.floor(targetWidth / 2);
-            const startY = mapY - Math.floor(targetHeight / 2);
+            // Calculate brush pattern using 9-slice scaling
+            const pattern = calculateBrushPattern(
+                targetArea,
+                { width: brushWidth, height: brushHeight },
+                this.useWorldAlignedRepeat
+            );
 
-            // Calculate region sizes for 9-slice scaling
-            const leftWidth = Math.min(brushWidth, 1);
-            const rightWidth = Math.min(brushWidth - leftWidth, 1);
-            const centerWidth = Math.max(0, brushWidth - leftWidth - rightWidth);
+            // Apply the pattern
+            for (let ty = 0; ty < targetArea.height; ty++) {
+                for (let tx = 0; tx < targetArea.width; tx++) {
+                    const worldX = targetArea.x + tx;
+                    const worldY = targetArea.y + ty;
 
-            const topHeight = Math.min(brushHeight, 1);
-            const bottomHeight = Math.min(brushHeight - topHeight, 1);
-            const centerHeight = Math.max(0, brushHeight - topHeight - bottomHeight);
-
-            // Calculate repeat origin based on world position or brush position
-            const repeatOriginX = this.useWorldAlignedRepeat ? 
-                ((startX % centerWidth) + centerWidth) % centerWidth :
-                0;
-            const repeatOriginY = this.useWorldAlignedRepeat ? 
-                ((startY % centerHeight) + centerHeight) % centerHeight :
-                0;
-
-            // Apply the brush with 9-slice scaling
-            for (let ty = 0; ty < targetHeight; ty++) {
-                for (let tx = 0; tx < targetWidth; tx++) {
-                    const worldX = startX + tx;
-                    const worldY = startY + ty;
-
-                    if (worldX >= 0 && worldX < this.mapData[0][0].length && 
-                        worldY >= 0 && worldY < this.mapData[0].length) {
-                        
-                        // Determine which region of the brush to use
-                        let sourceX: number;
-                        let sourceY: number;
-
-                        // Map x position to source region
-                        if (tx < leftWidth) {
-                            // Left region
-                            sourceX = tx;
-                        } else if (tx >= targetWidth - rightWidth) {
-                            // Right region
-                            sourceX = brushWidth - (targetWidth - tx);
-                        } else {
-                            // Center region - tile the middle section with offset
-                            sourceX = leftWidth + ((tx - leftWidth + repeatOriginX) % centerWidth);
-                        }
-
-                        // Map y position to source region
-                        if (ty < topHeight) {
-                            // Top region
-                            sourceY = ty;
-                        } else if (ty >= targetHeight - bottomHeight) {
-                            // Bottom region
-                            sourceY = brushHeight - (targetHeight - ty);
-                        } else {
-                            // Center region - tile the middle section with offset
-                            sourceY = topHeight + ((ty - topHeight + repeatOriginY) % centerHeight);
-                        }
-
-                        // Clamp to brush dimensions
-                        sourceX = Math.min(sourceX, brushWidth - 1);
-                        sourceY = Math.min(sourceY, brushHeight - 1);
-
+                    if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
+                        const { sourceX, sourceY } = pattern[ty][tx];
                         const tileIndex = tiles[sourceY][sourceX];
                         if (tileIndex !== -1) {
                             if (this.mapData[this.currentLayer][worldY][worldX] !== tileIndex) {
@@ -1688,17 +1571,15 @@ export class MapEditor {
             }
         } else {
             // Regular brush painting
-            const brushOffsetX = Math.floor((this.brushSize - 1) / 2);
-            const brushOffsetY = Math.floor((this.brushSize - 1) / 2);
+            const brushArea = getBrushArea(mapX, mapY, this.brushSize);
             const newTile = isErasing ? -1 : this.selectedTile;
             
-            for (let dy = 0; dy < this.brushSize; dy++) {
-                for (let dx = 0; dx < this.brushSize; dx++) {
-                    const tx = mapX - brushOffsetX + dx;
-                    const ty = mapY - brushOffsetY + dy;
+            for (let dy = 0; dy < brushArea.height; dy++) {
+                for (let dx = 0; dx < brushArea.width; dx++) {
+                    const tx = brushArea.x + dx;
+                    const ty = brushArea.y + dy;
                     
-                    if (tx >= 0 && tx < this.mapData[0][0].length && 
-                        ty >= 0 && ty < this.mapData[0].length) {
+                    if (isInMapBounds(tx, ty, this.getMapDimensions())) {
                         if (this.mapData[this.currentLayer][ty][tx] !== newTile) {
                             this.hasModifiedDuringPaint = true;
                             this.mapData[this.currentLayer][ty][tx] = newTile;
@@ -1745,5 +1626,30 @@ export class MapEditor {
                 currentY += height + 10; // brush height + spacing
             }
         }
+    }
+
+    // Layer management methods
+    swapLayers(layerA: number, layerB: number) {
+        if (layerA >= 0 && layerA < this.MAX_LAYERS && 
+            layerB >= 0 && layerB < this.MAX_LAYERS) {
+            // Swap layer data
+            [this.mapData[layerA], this.mapData[layerB]] = 
+            [this.mapData[layerB], this.mapData[layerA]];
+            // Swap visibility
+            [this.layerVisibility[layerA], this.layerVisibility[layerB]] = 
+            [this.layerVisibility[layerB], this.layerVisibility[layerA]];
+            // Save state
+            this.saveToUndoStack();
+        }
+    }
+
+    toggleLayerVisibility(layer: number) {
+        if (layer >= 0 && layer < this.MAX_LAYERS) {
+            this.layerVisibility[layer] = !this.layerVisibility[layer];
+        }
+    }
+
+    isLayerVisible(layer: number): boolean {
+        return layer >= 0 && layer < this.MAX_LAYERS ? this.layerVisibility[layer] : false;
     }
 } 
