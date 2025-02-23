@@ -3,6 +3,7 @@
     import { MapEditor, type ResizeAlignment } from "$lib/mapeditor";
     import { onMount } from "svelte";
     import { base } from "$app/paths";
+    import { drawTile } from "$lib/drawTile";
     let editorCanvas: HTMLCanvasElement | undefined = $state();
     let editor: MapEditor | undefined;
     let animationFrame: number;
@@ -12,6 +13,8 @@
     let mapHeight: number = $state(32);
     let showNewMapDialog: boolean = $state(false);
     let showResizeDialog: boolean = $state(false);
+    let showCustomBrushDialog: boolean = $state(false);
+    let selectedBrushForSettings: string | null = $state(null);
     let newWidth: number = $state(20);
     let newHeight: number = $state(15);
     let selectedAlignment: string = $state('middle-center');
@@ -25,6 +28,14 @@
     let showExportDialog: boolean = $state(false);
     let exportedData: string = $state('');
     let activeExportTab: 'export' | 'docs' = $state('export');
+    let customBrushName: string | null = $state('');
+    let customBrushWidth: number = $state(2);
+    let customBrushHeight: number = $state(2);
+    let customBrushTiles: number[][] = $state([]);
+    let customBrushSelectedTile: number = $state(-1);
+    let useWorldAlignedRepeat: boolean = $state(false);
+    let useCompression: boolean = $state(true);
+    let includeCustomBrushes: boolean = $state(true);
     const url = `${base}/tilemap.png`;
     let tilemapSettings = $state({
         url: url,
@@ -33,7 +44,6 @@
         spacing: 1
     });
     let showGrid: boolean = $state(true);
-    let useCompression: boolean = $state(true);
 
     // Define available zoom levels as percentages
     const ZOOM_LEVELS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
@@ -106,6 +116,12 @@
     function handleKeyDown(e: KeyboardEvent) {
         // Skip handling if target is an input element
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+            return;
+        }
+
+        // Skip if brush dialog is open
+        if (showCustomBrushDialog) {
+            handleBrushDialogKeydown(e);
             return;
         }
 
@@ -229,6 +245,8 @@
             return;
         }
 
+        // Pass dialog state to MapEditor
+        (e as any).isDialogOpen = showCustomBrushDialog;
         editor?.handleKeyDown(e);
     }
 
@@ -259,16 +277,10 @@
         editor?.resize();
     }
 
-    function exportMap() {
-        if (editor) {
-            const data = editor.exportMap(useCompression);
-            const exportData = {
-                version: 1,
-                ...JSON.parse(data)
-            };
-            exportedData = JSON.stringify(exportData, null, 2);
-            showExportDialog = true;
-        }
+    const exportMap = () => {
+        if (!editor) return;
+        exportedData = editor.exportMap(useCompression, includeCustomBrushes);
+        showExportDialog = true;
     }
 
     function importMap() {
@@ -478,6 +490,135 @@
             alert('Failed to copy to clipboard');
         }
     }
+
+    // Add event listener for custom brush dialog
+    $effect(() => {
+        if (editorCanvas) {
+            editorCanvas.addEventListener('addbrushrequested', () => {
+                showCustomBrushDialog = true;
+                selectedBrushForSettings = null;
+                customBrushName = '';
+                customBrushWidth = 2;
+                customBrushHeight = 2;
+                customBrushTiles = Array(customBrushHeight).fill(null)
+                    .map(() => Array(customBrushWidth).fill(-1));
+                customBrushSelectedTile = -1;
+            });
+
+            editorCanvas.addEventListener('brushsettingsrequested', ((e: CustomEvent) => {
+                const brush = editor?.customBrushes.find(b => b.id === e.detail.brushId);
+                if (brush) {
+                    showCustomBrushDialog = true;
+                    selectedBrushForSettings = brush.id;
+                    customBrushName = brush.name;
+                    customBrushWidth = brush.width;
+                    customBrushHeight = brush.height;
+                    customBrushTiles = brush.tiles.map(row => [...row]);
+                    customBrushSelectedTile = -1;
+                }
+            }) as EventListener);
+        }
+    });
+
+    function saveCustomBrush() {
+        if (editor && customBrushTiles.length > 0) {
+            if (selectedBrushForSettings) {
+                editor.updateCustomBrush(selectedBrushForSettings, customBrushName || null, customBrushTiles);
+            } else {
+                editor.createCustomBrush(null, customBrushTiles);
+            }
+            showCustomBrushDialog = false;
+        }
+    }
+
+    function updateCustomBrushSize() {
+        const newTiles = Array(customBrushHeight).fill(null)
+            .map((_, y) => Array(customBrushWidth).fill(-1)
+                .map((_, x) => {
+                    // Preserve existing tiles where possible
+                    if (y < customBrushTiles.length && x < customBrushTiles[0].length) {
+                        return customBrushTiles[y][x];
+                    }
+                    return -1;
+                })
+            );
+        customBrushTiles = newTiles;
+    }
+
+    function handleCustomBrushTileClick(x: number, y: number) {
+        if (x >= 0 && x < customBrushWidth && y >= 0 && y < customBrushHeight) {
+            // Create a new copy of the array to trigger reactivity
+            const newTiles = customBrushTiles.map(row => [...row]);
+            newTiles[y][x] = customBrushSelectedTile;
+            customBrushTiles = newTiles;
+        }
+    }
+
+    // Add event listener for keyboard events
+    $effect(() => {
+        if (editor) {
+            // Remove keyboard event listeners since they're handled in handleKeyDown
+            window.addEventListener('keyup', (e) => {
+                editor?.handleKeyUp(e);
+            });
+        }
+    });
+
+    // Add function to handle WASD navigation in brush dialog
+    function handleBrushDialogKeydown(e: KeyboardEvent) {
+        if (!showCustomBrushDialog || !editor) return;
+        
+        // Skip if target is an input element
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+            return;
+        }
+
+        const tilesPerRow = editor.tilemap.width;
+        const totalTiles = editor.tilemap.width * editor.tilemap.height;
+
+        switch (e.key.toLowerCase()) {
+            case 'a':
+                e.preventDefault();
+                if (customBrushSelectedTile > -1) {
+                    customBrushSelectedTile = Math.max(-1, customBrushSelectedTile - 1);
+                }
+                break;
+            case 'd':
+                e.preventDefault();
+                if (customBrushSelectedTile === -1) {
+                    customBrushSelectedTile = 0;
+                } else {
+                    customBrushSelectedTile = Math.min(totalTiles - 1, customBrushSelectedTile + 1);
+                }
+                break;
+            case 'w':
+                e.preventDefault();
+                if (customBrushSelectedTile >= tilesPerRow) {
+                    customBrushSelectedTile = Math.max(0, customBrushSelectedTile - tilesPerRow);
+                }
+                break;
+            case 's':
+                e.preventDefault();
+                if (customBrushSelectedTile === -1) {
+                    customBrushSelectedTile = Math.min(tilesPerRow - 1, totalTiles - 1);
+                } else if (customBrushSelectedTile < totalTiles - tilesPerRow) {
+                    customBrushSelectedTile = Math.min(totalTiles - 1, customBrushSelectedTile + tilesPerRow);
+                }
+                break;
+        }
+    }
+
+    $effect(() => {
+        if (editor) {
+            editor.isCustomBrushMode = showCustomBrushDialog;
+        }
+    });
+
+    $effect(() => {
+        if (editor) {
+            editor.useWorldAlignedRepeat = useWorldAlignedRepeat;
+        }
+    });
 </script>
 
 <svelte:head>
@@ -579,7 +720,7 @@
             <button 
                 onclick={() => {
                     if (editor) {
-                        editor.setBrushSize(editor.brushSize - 1);
+                        editor.brushSize = Math.max(1, editor.brushSize - 1);
                         brushSize = editor.brushSize;
                     }
                 }}
@@ -589,7 +730,7 @@
             <button 
                 onclick={() => {
                     if (editor) {
-                        editor.setBrushSize(editor.brushSize + 1);
+                        editor.brushSize = Math.max(1, editor.brushSize + 1);
                         brushSize = editor.brushSize;
                     }
                 }}
@@ -791,6 +932,17 @@
                                     '(JSON format, human readable)'}
                             </span>
                         </label>
+                        <label class="checkbox-label">
+                            <input 
+                                type="checkbox" 
+                                bind:checked={includeCustomBrushes}
+                                onchange={exportMap}
+                            >
+                            Include custom brushes
+                            <span class="help-text">
+                                (Export custom brush patterns with the map)
+                            </span>
+                        </label>
                     </div>
                     <div class="export-buttons">
                         <button onclick={downloadJson} class="primary-button">
@@ -846,7 +998,16 @@
         "tileWidth": number,
         "tileHeight": number,
         "spacing": number
-    }
+    },
+    "customBrushes": [
+        {
+            "id": string,
+            "name": string | null,
+            "tiles": number[][],  // 2D array of tile indices
+            "width": number,
+            "height": number
+        }
+    ]
 }`}</code></pre>
 
                         <h5>Example Code (TypeScript)</h5>
@@ -960,6 +1121,122 @@ function unpackMapData(base64Data: string): number[][][] {
                     <li><strong>Click in palette</strong> Select tile</li>
                     <li><strong>Mouse Wheel</strong> Zoom in/out</li>
                 </ul>
+            </div>
+        </div>
+    {/if}
+
+    {#if showCustomBrushDialog}
+        <div class="dialog">
+            <h3>{selectedBrushForSettings ? 'Edit' : 'Create'} Custom Brush</h3>
+            <div class="dialog-content">
+                <div class="brush-dimensions">
+                    <label>
+                        Width:
+                        <input 
+                            type="number" 
+                            bind:value={customBrushWidth} 
+                            min="1" 
+                            max="9"
+                            onchange={updateCustomBrushSize}
+                        />
+                    </label>
+                    <label>
+                        Height:
+                        <input 
+                            type="number" 
+                            bind:value={customBrushHeight} 
+                            min="1" 
+                            max="9"
+                            onchange={updateCustomBrushSize}
+                        />
+                    </label>
+                </div>
+
+                <label class="checkbox-label">
+                    <input 
+                        type="checkbox" 
+                        bind:checked={useWorldAlignedRepeat}
+                    >
+                    World-aligned repeat
+                    <span class="help-text">
+                        (Pattern repeats relative to world grid instead of brush position)
+                    </span>
+                </label>
+
+                <div class="brush-editor">
+                    <div class="tile-picker">
+                        <h4>Select Tile</h4>
+                        <div class="tile-grid" style="
+                            --tilemap-width: {editor?.tilemap.width ?? 'auto-fill'}; 
+                            --tilemap-spacing: {editor?.tilemap.spacing ?? 2}px;
+                            --tile-size: {Math.max(32, editor?.tilemap.tileWidth ?? 32)}px;
+                        ">
+                            <button 
+                                class="tile-cell eraser"
+                                class:selected={customBrushSelectedTile === -1}
+                                onclick={() => customBrushSelectedTile = -1}
+                            >
+                                ❌
+                            </button>
+                            {#if editor}
+                                {#each Array(editor.tilemap.width * editor.tilemap.height) as _, i}
+                                    <button 
+                                        class="tile-cell"
+                                        class:selected={customBrushSelectedTile === i}
+                                        onclick={() => customBrushSelectedTile = i}
+                                    >
+                                        <canvas 
+                                            width={editor.tilemap.tileWidth}
+                                            height={editor.tilemap.tileHeight}
+                                            style="width: var(--tile-size); height: var(--tile-size); image-rendering: pixelated;"
+                                            use:drawTile={{ editor, tileIndex: i }}
+                                        ></canvas>
+                                    </button>
+                                {/each}
+                            {/if}
+                        </div>
+                    </div>
+
+                    <div class="brush-grid-section">
+                        <h4>Brush Pattern</h4>
+                        <div class="brush-grid" style="
+                            grid-template-columns: repeat({customBrushWidth}, var(--tile-size, 32px));
+                            --tile-size: {Math.max(32, editor?.tilemap.tileWidth ?? 32)}px;
+                        ">
+                            {#each customBrushTiles as row, y}
+                                {#each row as tile, x}
+                                    <button 
+                                        class="tile-cell"
+                                        class:empty={tile === -1}
+                                        onclick={() => handleCustomBrushTileClick(x, y)}
+                                    >
+                                        {#if tile !== -1 && editor}
+                                            <canvas 
+                                                width={editor.tilemap.tileWidth}
+                                                height={editor.tilemap.tileHeight}
+                                                style="width: var(--tile-size); height: var(--tile-size); image-rendering: pixelated;"
+                                                use:drawTile={{ editor, tileIndex: tile }}
+                                            ></canvas>
+                                        {/if}
+                                    </button>
+                                {/each}
+                            {/each}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dialog-buttons">
+                    <button onclick={saveCustomBrush}>{selectedBrushForSettings ? 'Save' : 'Create'}</button>
+                    {#if selectedBrushForSettings}
+                        <button class="delete" onclick={() => {
+                            if (editor && selectedBrushForSettings) {
+                                editor.deleteCustomBrush(selectedBrushForSettings);
+                                showCustomBrushDialog = false;
+                            }
+                        }}>Delete</button>
+                    {/if}
+                    <button onclick={() => showCustomBrushDialog = false}>Cancel</button>
+                </div>
             </div>
         </div>
     {/if}
@@ -1594,9 +1871,9 @@ function unpackMapData(base64Data: string): number[][][] {
     .checkbox-label {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
         color: #eee;
-        font-size: 14px;
     }
 
     .checkbox-label input[type="checkbox"] {
@@ -1606,7 +1883,144 @@ function unpackMapData(base64Data: string): number[][][] {
     }
 
     .help-text {
-        color: #888;
-        font-size: 12px;
+        color: #999;
+        font-size: 0.9em;
+        margin-left: 0.25rem;
+    }
+
+    .brush-dimensions {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .brush-editor {
+        display: flex;
+        gap: 20px;
+        margin: 20px 0;
+        flex-direction: column;  /* Stack sections vertically */
+    }
+
+    .tile-picker {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .brush-grid-section {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .brush-grid {
+        display: grid;
+        gap: 2px;
+        padding: 10px;
+        background: #444;
+        border-radius: 4px;
+        justify-content: center;  /* Center the grid horizontally */
+    }
+
+    .tile-cell {
+        width: var(--tile-size, 32px);
+        height: var(--tile-size, 32px);
+        padding: 0;
+        background: #333;
+        border: 1px solid #555;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        flex-shrink: 0;
+        position: relative;
+        z-index: 0;
+        box-sizing: border-box;
+    }
+
+    .tile-cell:hover {
+        background: #3a3a3a;
+    }
+
+    .tile-cell.empty {
+        background: #2a2a2a;
+    }
+
+    .tile-cell.selected {
+        z-index: 1;  /* Ensure selected cell appears above others */
+    }
+
+    .tile-cell.selected::before {
+        content: '';
+        position: absolute;
+        top: -2px;
+        left: -2px;
+        width: calc(100% + 4px);
+        height: calc(100% + 4px);
+        border: 2px solid #000;
+        pointer-events: none;
+        z-index: 2;
+        box-sizing: border-box;  /* Include border in width/height calculation */
+    }
+
+    .tile-cell.selected::after {
+        content: '';
+        position: absolute;
+        top: -2px;
+        left: -2px;
+        width: calc(100% + 4px);
+        height: calc(100% + 4px);
+        border: 1px solid #00ff00;
+        pointer-events: none;
+        z-index: 3;
+        box-sizing: border-box;  /* Include border in width/height calculation */
+    }
+
+    .tile-cell canvas {
+        image-rendering: pixelated;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        z-index: 1;
+    }
+
+    .tile-picker h4 {
+        margin: 0;
+        font-size: 14px;
+    }
+
+    .tile-grid {
+        display: grid;
+        grid-template-columns: repeat(var(--tilemap-width, auto-fill), 32px);
+        gap: var(--tilemap-spacing, 2px);
+        padding: 10px;
+        background: #444;
+        border-radius: 4px;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+
+    .tile-cell.eraser {
+        font-size: 16px;
+    }
+
+    .brush-settings-buttons {
+        display: flex;
+        gap: 10px;
+        margin: 20px 0;
+    }
+
+    .brush-settings-buttons button {
+        flex: 1;
+        padding: 8px 16px;
+    }
+
+    .brush-settings-buttons button.delete {
+        background: #aa0000;
+        border-color: #cc0000;
+    }
+
+    .brush-settings-buttons button.delete:hover {
+        background: #cc0000;
     }
 </style>

@@ -7,6 +7,16 @@ export const ALIGNMENTS = ['top-left', 'top-center', 'top-right',
                    'bottom-left', 'bottom-center', 'bottom-right'] as const;
 export type ResizeAlignment = typeof ALIGNMENTS[number];
 
+// Custom brush types
+export interface CustomBrush {
+    id: string;
+    name: string | null;  // Make name optional
+    tiles: number[][];  // 2D array of tile indices
+    width: number;
+    height: number;
+    preview: HTMLCanvasElement | null;
+}
+
 export class MapEditor {
     canvas!: HTMLCanvasElement;
     ctx!: CanvasRenderingContext2D;
@@ -65,6 +75,12 @@ export class MapEditor {
     private tileWidth: number = 16;
     private tileHeight: number = 16;
     private tileSpacing: number = 1;
+
+    // For custom brushes
+    customBrushes: CustomBrush[] = [];
+    selectedCustomBrush: CustomBrush | null = null;
+    isCustomBrushMode: boolean = false;
+    useWorldAlignedRepeat: boolean = false;
 
     constructor(canvas: HTMLCanvasElement, width: number = 20, height: number = 15) {
         this.canvas = canvas;
@@ -342,8 +358,106 @@ export class MapEditor {
                     this.ctx.fillRect(startX, startY, this.tilemap.tileWidth, this.tilemap.tileHeight);
                     this.ctx.strokeRect(startX, startY, this.tilemap.tileWidth, this.tilemap.tileHeight);
                 });
+            } else if (this.isCustomBrushMode && this.selectedCustomBrush) {
+                const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
+                
+                // Calculate target dimensions based on brush size
+                const targetWidth = this.brushSize;
+                const targetHeight = this.brushSize;
+                
+                // Calculate the starting position to center the brush
+                const startX = this.hoverX - Math.floor(targetWidth / 2);
+                const startY = this.hoverY - Math.floor(targetHeight / 2);
+
+                // Calculate region sizes for 9-slice scaling
+                const leftWidth = Math.min(brushWidth, 1);
+                const rightWidth = Math.min(brushWidth - leftWidth, 1);
+                const centerWidth = Math.max(0, brushWidth - leftWidth - rightWidth);
+
+                const topHeight = Math.min(brushHeight, 1);
+                const bottomHeight = Math.min(brushHeight - topHeight, 1);
+                const centerHeight = Math.max(0, brushHeight - topHeight - bottomHeight);
+
+                // Calculate repeat origin based on world position or brush position
+                const repeatOriginX = this.useWorldAlignedRepeat ? 
+                    ((startX % centerWidth) + centerWidth) % centerWidth :
+                    0;
+                const repeatOriginY = this.useWorldAlignedRepeat ? 
+                    ((startY % centerHeight) + centerHeight) % centerHeight :
+                    0;
+
+                // Draw semi-transparent preview
+                this.ctx.globalAlpha = 0.5;
+
+                // Draw preview tiles using 9-slice scaling
+                for (let ty = 0; ty < targetHeight; ty++) {
+                    for (let tx = 0; tx < targetWidth; tx++) {
+                        const worldX = startX + tx;
+                        const worldY = startY + ty;
+
+                        if (worldX >= 0 && worldX < this.mapData[0][0].length && 
+                            worldY >= 0 && worldY < this.mapData[0].length) {
+                            
+                            // Determine which region of the brush to use
+                            let sourceX: number;
+                            let sourceY: number;
+
+                            // Map x position to source region
+                            if (tx < leftWidth) {
+                                // Left region
+                                sourceX = tx;
+                            } else if (tx >= targetWidth - rightWidth) {
+                                // Right region
+                                sourceX = brushWidth - (targetWidth - tx);
+                            } else {
+                                // Center region - tile the middle section with offset
+                                sourceX = leftWidth + ((tx - leftWidth + repeatOriginX) % centerWidth);
+                            }
+
+                            // Map y position to source region
+                            if (ty < topHeight) {
+                                // Top region
+                                sourceY = ty;
+                            } else if (ty >= targetHeight - bottomHeight) {
+                                // Bottom region
+                                sourceY = brushHeight - (targetHeight - ty);
+                            } else {
+                                // Center region - tile the middle section with offset
+                                sourceY = topHeight + ((ty - topHeight + repeatOriginY) % centerHeight);
+                            }
+
+                            // Clamp to brush dimensions
+                            sourceX = Math.min(sourceX, brushWidth - 1);
+                            sourceY = Math.min(sourceY, brushHeight - 1);
+
+                            const tileIndex = tiles[sourceY][sourceX];
+                            if (tileIndex !== -1) {
+                                const tile = this.tilemap.getTile(tileIndex);
+                                if (tile) {
+                                    this.ctx.drawImage(
+                                        tile,
+                                        worldX * this.tilemap.tileWidth,
+                                        worldY * this.tilemap.tileHeight
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                this.ctx.globalAlpha = 1.0;
+
+                // Draw border around the entire brush area
+                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                this.ctx.lineWidth = 2 / this.zoomLevel;
+                this.ctx.strokeRect(
+                    startX * this.tilemap.tileWidth,
+                    startY * this.tilemap.tileHeight,
+                    targetWidth * this.tilemap.tileWidth,
+                    targetHeight * this.tilemap.tileHeight
+                );
             } else {
-                // Calculate brush offset to center it
+                // Regular brush preview
                 const brushOffsetX = Math.floor((this.brushSize - 1) / 2);
                 const brushOffsetY = Math.floor((this.brushSize - 1) / 2);
                 
@@ -383,29 +497,111 @@ export class MapEditor {
             }
         }
 
-        // Then draw the selection highlight on top
-        const selectedX = paletteX + (this.selectedTile % tilesPerRow) * (this.tilemap.tileWidth + this.tilemap.spacing);
-        const selectedY = paletteY + Math.floor(this.selectedTile / tilesPerRow) * (this.tilemap.tileHeight + this.tilemap.spacing);
-        
-        // Draw black border first
-        this.ctx.strokeStyle = '#000000';
-        this.ctx.lineWidth = 3;
-        this.ctx.strokeRect(
-            selectedX - 2,
-            selectedY - 2,
-            this.tilemap.tileWidth + 4,
-            this.tilemap.tileHeight + 4
-        );
+        // Draw the selection highlight for regular tiles
+        if (!this.isCustomBrushMode) {
+            const selectedX = paletteX + (this.selectedTile % tilesPerRow) * (this.tilemap.tileWidth + this.tilemap.spacing);
+            const selectedY = paletteY + Math.floor(this.selectedTile / tilesPerRow) * (this.tilemap.tileHeight + this.tilemap.spacing);
+            
+            // Draw black border first
+            this.ctx.strokeStyle = '#000000';
+            this.ctx.lineWidth = 3;
+            this.ctx.strokeRect(
+                selectedX - 2,
+                selectedY - 2,
+                this.tilemap.tileWidth + 4,
+                this.tilemap.tileHeight + 4
+            );
 
-        // Draw green highlight on top
-        this.ctx.strokeStyle = '#00ff00';
+            // Draw green highlight on top
+            this.ctx.strokeStyle = '#00ff00';
+            this.ctx.lineWidth = 2;
+            this.ctx.strokeRect(
+                selectedX - 2,
+                selectedY - 2,
+                this.tilemap.tileWidth + 4,
+                this.tilemap.tileHeight + 4
+            );
+        }
+
+        // Draw custom brushes section
+        const brushSectionY = paletteY + Math.ceil(this.tilemap.width * this.tilemap.height / tilesPerRow) * 
+            (this.tilemap.tileHeight + this.tilemap.spacing) + 20;
+        
+        // Draw separator line
+        this.ctx.strokeStyle = '#666';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.moveTo(paletteX, brushSectionY - 10);
+        this.ctx.lineTo(paletteX + tilesPerRow * (this.tilemap.tileWidth + this.tilemap.spacing), brushSectionY - 10);
+        this.ctx.stroke();
+
+        // Draw custom brushes
+        const maxBrushWidth = tilesPerRow * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
+        const brushSpacing = 10;
+        let currentY = brushSectionY;
+
+        // Draw "Add Brush" button
+        const addBrushSize = 32;
+        this.ctx.fillStyle = '#444';
+        this.ctx.fillRect(paletteX, currentY, addBrushSize, addBrushSize);
+        this.ctx.strokeStyle = '#666';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(paletteX, currentY, addBrushSize, addBrushSize);
+        
+        // Draw plus symbol
+        this.ctx.strokeStyle = '#fff';
         this.ctx.lineWidth = 2;
-        this.ctx.strokeRect(
-            selectedX - 2,
-            selectedY - 2,
-            this.tilemap.tileWidth + 4,
-            this.tilemap.tileHeight + 4
-        );
+        const center = addBrushSize / 2;
+        const size = addBrushSize / 3;
+        this.ctx.beginPath();
+        this.ctx.moveTo(paletteX + center, currentY + center - size/2);
+        this.ctx.lineTo(paletteX + center, currentY + center + size/2);
+        this.ctx.moveTo(paletteX + center - size/2, currentY + center);
+        this.ctx.lineTo(paletteX + center + size/2, currentY + center);
+        this.ctx.stroke();
+
+        currentY += addBrushSize + brushSpacing;
+
+        // Draw each custom brush
+        for (const brush of this.customBrushes) {
+            if (brush.preview) {
+                const scale = Math.min(1, maxBrushWidth / brush.preview.width);
+                const width = brush.preview.width * scale;
+                const height = brush.preview.height * scale;
+
+                // Draw brush preview
+                this.ctx.drawImage(
+                    brush.preview,
+                    paletteX,
+                    currentY,
+                    width,
+                    height
+                );
+
+                // Draw selection highlight if this brush is selected
+                if (this.isCustomBrushMode && this.selectedCustomBrush?.id === brush.id) {
+                    this.ctx.strokeStyle = '#000000';
+                    this.ctx.lineWidth = 3;
+                    this.ctx.strokeRect(
+                        paletteX - 2,
+                        currentY - 2,
+                        width + 4,
+                        height + 4
+                    );
+
+                    this.ctx.strokeStyle = '#00ff00';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(
+                        paletteX - 2,
+                        currentY - 2,
+                        width + 4,
+                        height + 4
+                    );
+                }
+
+                currentY += height + brushSpacing;
+            }
+        }
     }
 
     handleWheel(e: WheelEvent) {
@@ -442,23 +638,99 @@ export class MapEditor {
     private getPaletteHeight(): number {
         if (!this.tilemap.isLoaded()) return 0;
         const rowCount = Math.ceil(this.tilemap.width * this.tilemap.height / this.tilemap.width);
-        const actualHeight = 10 + rowCount * (this.tilemap.tileHeight + this.tilemap.spacing);
-        return actualHeight;
+        const tilemapHeight = 10 + rowCount * (this.tilemap.tileHeight + this.tilemap.spacing);
+        
+        // Add height for custom brushes section
+        let customBrushesHeight = 20; // Spacing and separator
+        customBrushesHeight += 32 + 10; // Add brush button + spacing
+        
+        // Add height for each brush preview
+        const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
+        for (const brush of this.customBrushes) {
+            if (brush.preview) {
+                const scale = Math.min(1, maxBrushWidth / brush.preview.width);
+                customBrushesHeight += brush.preview.height * scale + 10; // brush height + spacing
+            }
+        }
+        
+        return tilemapHeight + customBrushesHeight;
     }
 
     private isWithinPalette(x: number, y: number): boolean {
-        if (!this.tilemap.isLoaded() || y >= this.getPaletteHeight()) return false;
+        if (!this.tilemap.isLoaded()) return false;
         
-        // Calculate the tile position within the palette
-        const tileX = Math.floor((x - 10) / (this.tilemap.tileWidth + this.tilemap.spacing));
-        const tileY = Math.floor((y - 10) / (this.tilemap.tileHeight + this.tilemap.spacing));
-        const tileIndex = tileY * this.tilemap.width + tileX;
+        const tilemapHeight = Math.ceil(this.tilemap.width * this.tilemap.height / this.tilemap.width) * 
+            (this.tilemap.tileHeight + this.tilemap.spacing) + 10;
         
-        // Check if the click is within the actual tilemap bounds
-        return tileX >= 0 && 
-               tileX < this.tilemap.width && 
-               tileY >= 0 && 
-               tileIndex < this.tilemap.width * this.tilemap.height;
+        // Check if within tilemap section
+        if (y < tilemapHeight) {
+            // Calculate the tile position within the palette
+            const tileX = Math.floor((x - 10) / (this.tilemap.tileWidth + this.tilemap.spacing));
+            const tileY = Math.floor((y - 10) / (this.tilemap.tileHeight + this.tilemap.spacing));
+            const tileIndex = tileY * this.tilemap.width + tileX;
+            
+            // Check if the click is within the actual tilemap bounds
+            return tileX >= 0 && 
+                   tileX < this.tilemap.width && 
+                   tileY >= 0 && 
+                   tileIndex < this.tilemap.width * this.tilemap.height;
+        }
+        
+        // Check if within custom brushes section
+        return y <= this.getPaletteHeight() && x >= 10 && 
+               x <= 10 + this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing);
+    }
+
+    private handlePaletteClick(x: number, y: number): void {
+        if (!this.tilemap.isLoaded()) return;
+        
+        const tilemapHeight = Math.ceil(this.tilemap.width * this.tilemap.height / this.tilemap.width) * 
+            (this.tilemap.tileHeight + this.tilemap.spacing) + 10;
+        
+        // Handle click in tilemap section
+        if (y < tilemapHeight) {
+            const tileX = Math.floor((x - 10) / (this.tilemap.tileWidth + this.tilemap.spacing));
+            const tileY = Math.floor((y - 10) / (this.tilemap.tileHeight + this.tilemap.spacing));
+            const tileIndex = tileY * this.tilemap.width + tileX;
+            
+            if (tileX >= 0 && tileX < this.tilemap.width && 
+                tileY >= 0 && tileIndex < this.tilemap.width * this.tilemap.height) {
+                this.selectedTile = tileIndex;
+                this.selectCustomBrush(null);
+            }
+            return;
+        }
+        
+        // Handle click in custom brushes section
+        let currentY = tilemapHeight + 20; // Add spacing for separator
+        
+        // Check if clicked on "Add Brush" button
+        if (y >= currentY && y <= currentY + 32 && x >= 10 && x <= 10 + 32) {
+            // Emit custom event for add brush
+            const event = new CustomEvent('addbrushrequested');
+            this.canvas.dispatchEvent(event);
+            return;
+        }
+        
+        currentY += 32 + 10; // Add brush button height + spacing
+        
+        // Check each brush
+        const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
+        for (const brush of this.customBrushes) {
+            if (brush.preview) {
+                const scale = Math.min(1, maxBrushWidth / brush.preview.width);
+                const width = brush.preview.width * scale;
+                const height = brush.preview.height * scale;
+                
+                if (y >= currentY && y <= currentY + height && 
+                    x >= 10 && x <= 10 + width) {
+                    this.selectCustomBrush(brush.id);
+                    return;
+                }
+                
+                currentY += height + 10; // brush height + spacing
+            }
+        }
     }
 
     handleMouseDown(e: MouseEvent) {
@@ -482,11 +754,10 @@ export class MapEditor {
 
         // Check if clicking in the palette area
         if (this.isWithinPalette(mouseX, mouseY)) {
-            if (e.button === 0) { // Only left click for palette selection
-                const tileX = Math.floor((mouseX - 10) / (this.tilemap.tileWidth + this.tilemap.spacing));
-                const tileY = Math.floor((mouseY - 10) / (this.tilemap.tileHeight + this.tilemap.spacing));
-                const tileIndex = tileY * this.tilemap.width + tileX;
-                this.selectedTile = tileIndex;
+            if (e.button === 0) { // Left click for palette selection
+                this.handlePaletteClick(mouseX, mouseY);
+            } else if (e.button === 2) { // Right click for brush settings
+                this.handlePaletteRightClick(mouseX, mouseY);
             }
             return;
         }
@@ -508,16 +779,15 @@ export class MapEditor {
             console.log('=== PAINT START ===');
 
             if (e.button === 0 || e.button === 2) { // Left or right click
-                const newTile = e.button === 0 ? this.selectedTile : -1; // -1 for right click (erasing)
                 this.isPainting = true;
-                this.paintTile = newTile;
+                this.paintTile = e.button === 0 ? this.selectedTile : -1;
 
-                if (this.isFloodFillMode) {
+                if (this.isFloodFillMode && e.button === 0) {
                     // Get the target value (the tile we're replacing)
                     const targetValue = this.mapData[this.currentLayer][mapY][mapX];
                     
                     // Only flood fill if we're changing to a different tile
-                    if (targetValue !== newTile) {
+                    if (targetValue !== this.paintTile) {
                         // Create a copy of the current layer for undo
                         const layerCopy = this.mapData[this.currentLayer].map(row => [...row]);
                         
@@ -527,7 +797,7 @@ export class MapEditor {
                             mapX,
                             mapY,
                             targetValue,
-                            newTile
+                            this.paintTile
                         );
                         
                         if (filledPoints.length > 0) {
@@ -535,21 +805,8 @@ export class MapEditor {
                         }
                     }
                 } else {
-                    // Regular brush painting
-                    for (let dy = 0; dy < this.brushSize; dy++) {
-                        for (let dx = 0; dx < this.brushSize; dx++) {
-                            const tx = mapX - Math.floor((this.brushSize - 1) / 2) + dx;
-                            const ty = mapY - Math.floor((this.brushSize - 1) / 2) + dy;
-                            
-                            if (tx >= 0 && tx < this.mapData[0][0].length && 
-                                ty >= 0 && ty < this.mapData[0].length) {
-                                if (this.mapData[this.currentLayer][ty][tx] !== newTile) {
-                                    this.hasModifiedDuringPaint = true;
-                                    this.mapData[this.currentLayer][ty][tx] = newTile;
-                                }
-                            }
-                        }
-                    }
+                    // Use the new applyBrush method
+                    this.applyBrush(mapX, mapY, e.button === 2);
                 }
             }
         }
@@ -597,27 +854,15 @@ export class MapEditor {
             this.hoverY = -1;
         }
 
-        // Handle painting with brush size
-        if (this.isPainting && this.paintTile !== null && !this.isWithinPalette(mouseX, mouseY)) {
-            // Calculate brush offset to center it
-            const brushOffsetX = Math.floor((this.brushSize - 1) / 2);
-            const brushOffsetY = Math.floor((this.brushSize - 1) / 2);
-            
-            // Paint all tiles within brush area
-            for (let dy = 0; dy < this.brushSize; dy++) {
-                for (let dx = 0; dx < this.brushSize; dx++) {
-                    const tx = mapX - brushOffsetX + dx;
-                    const ty = mapY - brushOffsetY + dy;
-                    
-                    if (tx >= 0 && tx < this.mapData[0][0].length && 
-                        ty >= 0 && ty < this.mapData[0].length) {
-                        if (this.mapData[this.currentLayer][ty][tx] !== this.paintTile) {
-                            this.hasModifiedDuringPaint = true;
-                            this.mapData[this.currentLayer][ty][tx] = this.paintTile;
-                        }
-                    }
-                }
+        // Handle painting
+        if (this.isPainting && !this.isWithinPalette(mouseX, mouseY)) {
+            if (this.isFloodFillMode) {
+                // Skip flood fill during drag
+                return;
             }
+            
+            // Use the new applyBrush method
+            this.applyBrush(mapX, mapY, this.paintTile === -1);
         }
     }
 
@@ -635,7 +880,7 @@ export class MapEditor {
     }
 
     // Export the current map data
-    exportMap(useCompression: boolean = true): string {
+    exportMap(useCompression: boolean = true, includeCustomBrushes: boolean = true): string {
         // Get the tilemap image as base64
         const tilemapCanvas = document.createElement('canvas');
         const tilemapImage = this.tilemap.getImage();
@@ -655,12 +900,22 @@ export class MapEditor {
             };
         }
 
+        // Export custom brushes data if enabled
+        const customBrushesData = includeCustomBrushes ? this.customBrushes.map(brush => ({
+            id: brush.id,
+            name: brush.name,
+            tiles: brush.tiles,
+            width: brush.width,
+            height: brush.height
+        })) : [];
+
         if (useCompression) {
             return JSON.stringify({
                 version: 1,
                 format: 'binary',
                 mapData: this.packMapData(this.mapData),
-                tilemap: tilemapData
+                tilemap: tilemapData,
+                customBrushes: customBrushesData
             });
         } else {
             return JSON.stringify({
@@ -671,13 +926,14 @@ export class MapEditor {
                     height: this.mapData[0].length,
                     layers: this.mapData
                 },
-                tilemap: tilemapData
+                tilemap: tilemapData,
+                customBrushes: customBrushesData
             });
         }
     }
 
     // Import map data
-    async importMap(data: { version: number, format: string, mapData: any, tilemap: any }) {
+    async importMap(data: { version: number, format: string, mapData: any, tilemap: any, customBrushes?: any[] }) {
         console.log('Importing map data:', data);
         if (!data.mapData) {
             throw new Error('Invalid map data format');
@@ -757,6 +1013,18 @@ export class MapEditor {
                 unpackedData.push(emptyLayer);
             }
             this.mapData = unpackedData.slice(0, this.MAX_LAYERS);
+
+            // Import custom brushes if present
+            if (data.customBrushes) {
+                // Clear existing brushes
+                this.customBrushes = [];
+                
+                // Import each brush
+                for (const brushData of data.customBrushes) {
+                    this.createCustomBrush(brushData.name, brushData.tiles);
+                }
+            }
+
             this.centerMap();
             console.log('Import completed successfully');
         } catch (error) {
@@ -825,6 +1093,9 @@ export class MapEditor {
             return;
         }
 
+        // Check if dialog is open (passed as custom property)
+        const isDialogOpen = (e as any).isDialogOpen;
+
         // Add flood fill toggle
         if (e.key === 'f') {
             e.preventDefault();
@@ -852,22 +1123,27 @@ export class MapEditor {
                 e.preventDefault();
                 this.keyPanState.left = true;
                 this.isKeyPanning = true;
-                return;
+                break;
             case 'ArrowRight':
                 e.preventDefault();
                 this.keyPanState.right = true;
                 this.isKeyPanning = true;
-                return;
+                break;
             case 'ArrowUp':
                 e.preventDefault();
                 this.keyPanState.up = true;
                 this.isKeyPanning = true;
-                return;
+                break;
             case 'ArrowDown':
                 e.preventDefault();
                 this.keyPanState.down = true;
                 this.isKeyPanning = true;
-                return;
+                break;
+        }
+
+        // Skip WASD handling if dialog is open
+        if (isDialogOpen) {
+            return;
         }
 
         // Check for number keys (0-9) for layer selection
@@ -914,18 +1190,6 @@ export class MapEditor {
         if (this.numberTimeout !== null) {
             window.clearTimeout(this.numberTimeout);
             this.numberTimeout = null;
-        }
-
-        // Add brush size controls
-        if (e.key === '[') {
-            e.preventDefault();
-            this.setBrushSize(this.brushSize - 1);
-            return;
-        }
-        if (e.key === ']') {
-            e.preventDefault();
-            this.setBrushSize(this.brushSize + 1);
-            return;
         }
 
         switch (e.key.toLowerCase()) {
@@ -1211,6 +1475,275 @@ export class MapEditor {
             console.error('Error unpacking map data:', error);
             // Return a minimal valid map on error
             return [Array(10).fill(null).map(() => Array(10).fill(-1))];
+        }
+    }
+
+    // Custom brush methods
+    createCustomBrush(name: string | null, tiles: number[][]): CustomBrush {
+        const id = `brush_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const height = tiles.length;
+        const width = tiles[0]?.length || 0;
+        
+        // Generate default name if none provided
+        const brushName = name || `${width}x${height} Brush`;
+        
+        // Create preview canvas
+        const preview = document.createElement('canvas');
+        preview.width = width * this.tilemap.tileWidth;
+        preview.height = height * this.tilemap.tileHeight;
+        const ctx = preview.getContext('2d');
+        
+        if (ctx) {
+            ctx.imageSmoothingEnabled = false;
+            // Draw each tile in the brush
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const tileIndex = tiles[y][x];
+                    if (tileIndex === -1) continue;
+                    
+                    const tile = this.tilemap.getTile(tileIndex);
+                    if (tile) {
+                        ctx.drawImage(
+                            tile,
+                            x * this.tilemap.tileWidth,
+                            y * this.tilemap.tileHeight
+                        );
+                    }
+                }
+            }
+        }
+
+        const brush: CustomBrush = {
+            id,
+            name: brushName,
+            tiles,
+            width,
+            height,
+            preview
+        };
+
+        this.customBrushes.push(brush);
+        return brush;
+    }
+
+    updateCustomBrush(brushId: string, name: string | null, tiles: number[][]): CustomBrush | null {
+        const brushIndex = this.customBrushes.findIndex(b => b.id === brushId);
+        if (brushIndex === -1) return null;
+
+        const height = tiles.length;
+        const width = tiles[0]?.length || 0;
+        
+        // Generate default name if none provided
+        const brushName = name || `${width}x${height} Brush`;
+        
+        // Create preview canvas
+        const preview = document.createElement('canvas');
+        preview.width = width * this.tilemap.tileWidth;
+        preview.height = height * this.tilemap.tileHeight;
+        const ctx = preview.getContext('2d');
+        
+        if (ctx) {
+            ctx.imageSmoothingEnabled = false;
+            // Draw each tile in the brush
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const tileIndex = tiles[y][x];
+                    if (tileIndex === -1) continue;
+                    
+                    const tile = this.tilemap.getTile(tileIndex);
+                    if (tile) {
+                        ctx.drawImage(
+                            tile,
+                            x * this.tilemap.tileWidth,
+                            y * this.tilemap.tileHeight
+                        );
+                    }
+                }
+            }
+        }
+
+        const brush: CustomBrush = {
+            id: brushId,
+            name: brushName,
+            tiles,
+            width,
+            height,
+            preview
+        };
+
+        this.customBrushes[brushIndex] = brush;
+        
+        // If this brush was selected, update the selection
+        if (this.selectedCustomBrush?.id === brushId) {
+            this.selectedCustomBrush = brush;
+        }
+
+        return brush;
+    }
+
+    selectCustomBrush(brushId: string | null) {
+        if (brushId === null) {
+            this.selectedCustomBrush = null;
+            this.isCustomBrushMode = false;
+            return;
+        }
+
+        const brush = this.customBrushes.find(b => b.id === brushId);
+        if (brush) {
+            this.selectedCustomBrush = brush;
+            this.isCustomBrushMode = true;
+        }
+    }
+
+    deleteCustomBrush(brushId: string) {
+        const index = this.customBrushes.findIndex(b => b.id === brushId);
+        if (index !== -1) {
+            if (this.selectedCustomBrush?.id === brushId) {
+                this.selectCustomBrush(null);
+            }
+            this.customBrushes.splice(index, 1);
+        }
+    }
+
+    // Override the existing paint logic to handle custom brushes
+    private applyBrush(mapX: number, mapY: number, isErasing: boolean = false) {
+        if (this.isCustomBrushMode && this.selectedCustomBrush && !isErasing) {
+            const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
+            
+            // Calculate the target area dimensions based on brush size
+            const targetWidth = this.brushSize;
+            const targetHeight = this.brushSize;
+            
+            // Calculate the starting position to center the brush
+            const startX = mapX - Math.floor(targetWidth / 2);
+            const startY = mapY - Math.floor(targetHeight / 2);
+
+            // Calculate region sizes for 9-slice scaling
+            const leftWidth = Math.min(brushWidth, 1);
+            const rightWidth = Math.min(brushWidth - leftWidth, 1);
+            const centerWidth = Math.max(0, brushWidth - leftWidth - rightWidth);
+
+            const topHeight = Math.min(brushHeight, 1);
+            const bottomHeight = Math.min(brushHeight - topHeight, 1);
+            const centerHeight = Math.max(0, brushHeight - topHeight - bottomHeight);
+
+            // Calculate repeat origin based on world position or brush position
+            const repeatOriginX = this.useWorldAlignedRepeat ? 
+                ((startX % centerWidth) + centerWidth) % centerWidth :
+                0;
+            const repeatOriginY = this.useWorldAlignedRepeat ? 
+                ((startY % centerHeight) + centerHeight) % centerHeight :
+                0;
+
+            // Apply the brush with 9-slice scaling
+            for (let ty = 0; ty < targetHeight; ty++) {
+                for (let tx = 0; tx < targetWidth; tx++) {
+                    const worldX = startX + tx;
+                    const worldY = startY + ty;
+
+                    if (worldX >= 0 && worldX < this.mapData[0][0].length && 
+                        worldY >= 0 && worldY < this.mapData[0].length) {
+                        
+                        // Determine which region of the brush to use
+                        let sourceX: number;
+                        let sourceY: number;
+
+                        // Map x position to source region
+                        if (tx < leftWidth) {
+                            // Left region
+                            sourceX = tx;
+                        } else if (tx >= targetWidth - rightWidth) {
+                            // Right region
+                            sourceX = brushWidth - (targetWidth - tx);
+                        } else {
+                            // Center region - tile the middle section with offset
+                            sourceX = leftWidth + ((tx - leftWidth + repeatOriginX) % centerWidth);
+                        }
+
+                        // Map y position to source region
+                        if (ty < topHeight) {
+                            // Top region
+                            sourceY = ty;
+                        } else if (ty >= targetHeight - bottomHeight) {
+                            // Bottom region
+                            sourceY = brushHeight - (targetHeight - ty);
+                        } else {
+                            // Center region - tile the middle section with offset
+                            sourceY = topHeight + ((ty - topHeight + repeatOriginY) % centerHeight);
+                        }
+
+                        // Clamp to brush dimensions
+                        sourceX = Math.min(sourceX, brushWidth - 1);
+                        sourceY = Math.min(sourceY, brushHeight - 1);
+
+                        const tileIndex = tiles[sourceY][sourceX];
+                        if (tileIndex !== -1) {
+                            if (this.mapData[this.currentLayer][worldY][worldX] !== tileIndex) {
+                                this.hasModifiedDuringPaint = true;
+                                this.mapData[this.currentLayer][worldY][worldX] = tileIndex;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Regular brush painting
+            const brushOffsetX = Math.floor((this.brushSize - 1) / 2);
+            const brushOffsetY = Math.floor((this.brushSize - 1) / 2);
+            const newTile = isErasing ? -1 : this.selectedTile;
+            
+            for (let dy = 0; dy < this.brushSize; dy++) {
+                for (let dx = 0; dx < this.brushSize; dx++) {
+                    const tx = mapX - brushOffsetX + dx;
+                    const ty = mapY - brushOffsetY + dy;
+                    
+                    if (tx >= 0 && tx < this.mapData[0][0].length && 
+                        ty >= 0 && ty < this.mapData[0].length) {
+                        if (this.mapData[this.currentLayer][ty][tx] !== newTile) {
+                            this.hasModifiedDuringPaint = true;
+                            this.mapData[this.currentLayer][ty][tx] = newTile;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private handlePaletteRightClick(x: number, y: number): void {
+        if (!this.tilemap.isLoaded()) return;
+        
+        const tilemapHeight = Math.ceil(this.tilemap.width * this.tilemap.height / this.tilemap.width) * 
+            (this.tilemap.tileHeight + this.tilemap.spacing) + 10;
+        
+        // Skip if clicking in tilemap section
+        if (y < tilemapHeight) {
+            return;
+        }
+        
+        // Handle right click in custom brushes section
+        let currentY = tilemapHeight + 20; // Add spacing for separator
+        currentY += 32 + 10; // Skip "Add Brush" button + spacing
+        
+        // Check each brush
+        const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
+        for (const brush of this.customBrushes) {
+            if (brush.preview) {
+                const scale = Math.min(1, maxBrushWidth / brush.preview.width);
+                const width = brush.preview.width * scale;
+                const height = brush.preview.height * scale;
+                
+                if (y >= currentY && y <= currentY + height && 
+                    x >= 10 && x <= 10 + width) {
+                    // Emit custom event for brush settings
+                    const event = new CustomEvent('brushsettingsrequested', {
+                        detail: { brushId: brush.id }
+                    });
+                    this.canvas.dispatchEvent(event);
+                    return;
+                }
+                
+                currentY += height + 10; // brush height + spacing
+            }
         }
     }
 } 
