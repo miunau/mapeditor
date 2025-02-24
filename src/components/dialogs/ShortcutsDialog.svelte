@@ -3,11 +3,14 @@
 </script>
 
 <div class="dialog" class:show={editorStore.showShortcuts}>
+    <h3>Hi!</h3>
+    <p>This is a tilemap based map editor by <a href="https://miunau.com" target="_blank">miunau</a>.</p>
     <h3>Keyboard Shortcuts</h3>
     <div class="dialog-content">
         <ul>
             <li><kbd>B</kbd> Brush tool</li>
             <li><kbd>G</kbd> Flood fill tool</li>
+            <li><kbd>R</kbd> Rectangle tool</li>
             <li><kbd>V</kbd> Toggle grid</li>
             <li><kbd>§</kbd> Show all layers</li>
             <li><kbd>1</kbd>-<kbd>9</kbd> Select layers 1-9, <kbd>0</kbd> Select layer 10</li>
@@ -52,7 +55,9 @@
         color: white;
         z-index: 1000;
     }
-
+    a {
+        color: #fff;
+    }
     .dialog.show {
         display: block;
     }

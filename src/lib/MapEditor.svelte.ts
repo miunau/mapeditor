@@ -73,6 +73,13 @@ export class ReactiveMapEditor {
     isCustomBrushMode = $state(false);
     useWorldAlignedRepeat = $state(false);
 
+    // For tile selection
+    isSelectingTiles = $state(false);
+    selectionStartX = $state<number | null>(null);
+    selectionStartY = $state<number | null>(null);
+    selectionEndX = $state<number | null>(null);
+    selectionEndY = $state<number | null>(null);
+
     // For tilemap settings
     private tilemapUrl = $state('/tilemap.png');
     private tileWidth = $state(16);
@@ -480,70 +487,116 @@ export class ReactiveMapEditor {
         } else if (this.isCustomBrushMode && this.selectedCustomBrush) {
             const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
             
-            // Calculate target dimensions based on brush size
-            const targetArea = getBrushArea(this.hoverX, this.hoverY, this.brushSize);
-            
-            // Calculate brush pattern
-            const pattern = calculateBrushPattern(
-                targetArea,
-                { width: brushWidth, height: brushHeight },
-                this.useWorldAlignedRepeat
-            );
+            // If using rectangle tool and not actively drawing, only show top-left tile
+            if (toolFSM.context.currentTool === 'rectangle' && !this.isDrawingRectangle) {
+                // Draw semi-transparent preview of just the top-left tile
+                this.ctx.globalAlpha = 0.5;
+                const tileIndex = tiles[0][0];  // Get top-left tile of brush
+                if (tileIndex !== -1) {
+                    const tile = this.tilemap.getTile(tileIndex);
+                    if (tile) {
+                        const screenPos = mapToScreen(
+                            this.hoverX,
+                            this.hoverY,
+                            0,
+                            0,
+                            1,
+                            this.tilemap.tileWidth,
+                            this.tilemap.tileHeight
+                        );
+                        this.ctx.drawImage(tile, screenPos.x, screenPos.y);
+                    }
+                }
+                this.ctx.globalAlpha = 1.0;
 
-            // Draw semi-transparent preview
-            this.ctx.globalAlpha = 0.5;
+                // Draw border around single tile
+                const startPos = mapToScreen(
+                    this.hoverX,
+                    this.hoverY,
+                    0,
+                    0,
+                    1,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight
+                );
+                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                this.ctx.lineWidth = 2 / this.zoomLevel;
+                this.ctx.strokeRect(
+                    startPos.x,
+                    startPos.y,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight
+                );
+            } else {
+                // Regular custom brush preview with full brush size
+                // Calculate target dimensions based on brush size
+                const targetArea = getBrushArea(this.hoverX, this.hoverY, this.brushSize);
+                
+                // Calculate brush pattern
+                const pattern = calculateBrushPattern(
+                    targetArea,
+                    { width: brushWidth, height: brushHeight },
+                    this.useWorldAlignedRepeat
+                );
 
-            // Draw preview tiles using pattern
-            for (let ty = 0; ty < targetArea.height; ty++) {
-                for (let tx = 0; tx < targetArea.width; tx++) {
-                    const worldX = targetArea.x + tx;
-                    const worldY = targetArea.y + ty;
+                // Draw semi-transparent preview
+                this.ctx.globalAlpha = 0.5;
 
-                    if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
-                        const { sourceX, sourceY } = pattern[ty][tx];
-                        const tileIndex = tiles[sourceY][sourceX];
-                        if (tileIndex !== -1) {
-                            const tile = this.tilemap.getTile(tileIndex);
-                            if (tile) {
-                                const screenPos = mapToScreen(
-                                    worldX,
-                                    worldY,
-                                    0,
-                                    0,
-                                    1,
-                                    this.tilemap.tileWidth,
-                                    this.tilemap.tileHeight
-                                );
-                                this.ctx.drawImage(tile, screenPos.x, screenPos.y);
+                // Draw preview tiles using pattern
+                for (let ty = 0; ty < targetArea.height; ty++) {
+                    for (let tx = 0; tx < targetArea.width; tx++) {
+                        const worldX = targetArea.x + tx;
+                        const worldY = targetArea.y + ty;
+
+                        if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
+                            const { sourceX, sourceY } = pattern[ty][tx];
+                            const tileIndex = tiles[sourceY][sourceX];
+                            if (tileIndex !== -1) {
+                                const tile = this.tilemap.getTile(tileIndex);
+                                if (tile) {
+                                    const screenPos = mapToScreen(
+                                        worldX,
+                                        worldY,
+                                        0,
+                                        0,
+                                        1,
+                                        this.tilemap.tileWidth,
+                                        this.tilemap.tileHeight
+                                    );
+                                    this.ctx.drawImage(tile, screenPos.x, screenPos.y);
+                                }
                             }
                         }
                     }
                 }
+
+                this.ctx.globalAlpha = 1.0;
+
+                // Draw border around the entire brush area
+                const startPos = mapToScreen(
+                    targetArea.x,
+                    targetArea.y,
+                    0,
+                    0,
+                    1,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight
+                );
+                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                this.ctx.lineWidth = 2 / this.zoomLevel;
+                this.ctx.strokeRect(
+                    startPos.x,
+                    startPos.y,
+                    targetArea.width * this.tilemap.tileWidth,
+                    targetArea.height * this.tilemap.tileHeight
+                );
             }
-
-            this.ctx.globalAlpha = 1.0;
-
-            // Draw border around the entire brush area
-            const startPos = mapToScreen(
-                targetArea.x,
-                targetArea.y,
-                0,
-                0,
-                1,
-                this.tilemap.tileWidth,
-                this.tilemap.tileHeight
-            );
-            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-            this.ctx.lineWidth = 2 / this.zoomLevel;
-            this.ctx.strokeRect(
-                startPos.x,
-                startPos.y,
-                targetArea.width * this.tilemap.tileWidth,
-                targetArea.height * this.tilemap.tileHeight
-            );
         } else {
-            // Regular brush preview
-            const brushArea = getBrushArea(this.hoverX, this.hoverY, this.brushSize);
+            // Regular brush preview - use single tile position for rectangle tool
+            const brushArea = toolFSM.context.currentTool === 'rectangle' 
+                ? { x: this.hoverX, y: this.hoverY, width: 1, height: 1 }
+                : getBrushArea(this.hoverX, this.hoverY, this.brushSize);
+            
             const startPos = mapToScreen(
                 brushArea.x,
                 brushArea.y,
@@ -597,28 +650,63 @@ export class ReactiveMapEditor {
 
         // Draw the selection highlight for regular tiles
         if (!this.isCustomBrushMode) {
-            const selectedX = paletteX + (toolFSM.context.selectedTile % tilesPerRow) * (this.tilemap.tileWidth + this.tilemap.spacing);
-            const selectedY = paletteY + Math.floor(toolFSM.context.selectedTile / tilesPerRow) * (this.tilemap.tileHeight + this.tilemap.spacing);
-            
-            // Draw black border first
-            this.ctx.strokeStyle = '#000000';
-            this.ctx.lineWidth = 3;
-            this.ctx.strokeRect(
-                selectedX - 2,
-                selectedY - 2,
-                this.tilemap.tileWidth + 4,
-                this.tilemap.tileHeight + 4
-            );
+            if (this.isSelectingTiles && this.selectionStartX !== null && this.selectionStartY !== null &&
+                this.selectionEndX !== null && this.selectionEndY !== null) {
+                // Draw multi-tile selection
+                const startTileX = Math.min(this.selectionStartX, this.selectionEndX);
+                const startTileY = Math.min(this.selectionStartY, this.selectionEndY);
+                const endTileX = Math.max(this.selectionStartX, this.selectionEndX);
+                const endTileY = Math.max(this.selectionStartY, this.selectionEndY);
 
-            // Draw green highlight on top
-            this.ctx.strokeStyle = '#00ff00';
-            this.ctx.lineWidth = 2;
-            this.ctx.strokeRect(
-                selectedX - 2,
-                selectedY - 2,
-                this.tilemap.tileWidth + 4,
-                this.tilemap.tileHeight + 4
-            );
+                const startX = paletteX + startTileX * (this.tilemap.tileWidth + this.tilemap.spacing);
+                const startY = paletteY + startTileY * (this.tilemap.tileHeight + this.tilemap.spacing);
+                const width = (endTileX - startTileX + 1) * (this.tilemap.tileWidth + this.tilemap.spacing) - this.tilemap.spacing;
+                const height = (endTileY - startTileY + 1) * (this.tilemap.tileHeight + this.tilemap.spacing) - this.tilemap.spacing;
+
+                // Draw black border first
+                this.ctx.strokeStyle = '#000000';
+                this.ctx.lineWidth = 3;
+                this.ctx.strokeRect(
+                    startX - 2,
+                    startY - 2,
+                    width + 4,
+                    height + 4
+                );
+
+                // Draw green highlight on top
+                this.ctx.strokeStyle = '#00ff00';
+                this.ctx.lineWidth = 2;
+                this.ctx.strokeRect(
+                    startX - 2,
+                    startY - 2,
+                    width + 4,
+                    height + 4
+                );
+            } else {
+                // Draw single tile selection
+                const selectedX = paletteX + (toolFSM.context.selectedTile % tilesPerRow) * (this.tilemap.tileWidth + this.tilemap.spacing);
+                const selectedY = paletteY + Math.floor(toolFSM.context.selectedTile / tilesPerRow) * (this.tilemap.tileHeight + this.tilemap.spacing);
+                
+                // Draw black border first
+                this.ctx.strokeStyle = '#000000';
+                this.ctx.lineWidth = 3;
+                this.ctx.strokeRect(
+                    selectedX - 2,
+                    selectedY - 2,
+                    this.tilemap.tileWidth + 4,
+                    this.tilemap.tileHeight + 4
+                );
+
+                // Draw green highlight on top
+                this.ctx.strokeStyle = '#00ff00';
+                this.ctx.lineWidth = 2;
+                this.ctx.strokeRect(
+                    selectedX - 2,
+                    selectedY - 2,
+                    this.tilemap.tileWidth + 4,
+                    this.tilemap.tileHeight + 4
+                );
+            }
         }
 
         // Draw custom brushes section
@@ -752,35 +840,38 @@ export class ReactiveMapEditor {
 
     private handlePaletteClick(x: number, y: number): void {
         if (!this.tilemap.isLoaded()) return;
-        
+
         const tilemapHeight = Math.ceil(this.tilemap.width * this.tilemap.height / this.tilemap.width) * 
             (this.tilemap.tileHeight + this.tilemap.spacing) + 10;
-        
+
         // Handle click in tilemap section
         if (y < tilemapHeight) {
-            const tileX = Math.floor((x - 10) / (this.tilemap.tileWidth + this.tilemap.spacing));
-            const tileY = Math.floor((y - 10) / (this.tilemap.tileHeight + this.tilemap.spacing));
-            const tileIndex = tileY * this.tilemap.width + tileX;
-            
-            if (tileX >= 0 && tileX < this.tilemap.width && 
-                tileY >= 0 && tileIndex < this.tilemap.width * this.tilemap.height) {
-                toolFSM.send('selectTile', tileIndex);
+            const tilePos = this.getTileFromPaletteCoords(x, y);
+            if (tilePos) {
+                // Start tile selection
+                this.isSelectingTiles = true;
+                this.selectionStartX = tilePos.tileX;
+                this.selectionStartY = tilePos.tileY;
+                this.selectionEndX = tilePos.tileX;
+                this.selectionEndY = tilePos.tileY;
+                
+                // Don't select the single tile yet - wait for mouseup
                 this.selectCustomBrush(null);
             }
             return;
         }
-        
+
         // Handle click in custom brushes section
         let currentY = tilemapHeight + 20; // Add spacing for separator
-        
+
         // Check if clicked on "Add Brush" button
         if (y >= currentY && y <= currentY + 32 && x >= 10 && x <= 10 + 32) {
             editorStore.setShowCustomBrushDialog(true);
             return;
         }
-        
+
         currentY += 32 + 10; // Add brush button height + spacing
-        
+
         // Check each brush
         const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
         for (const brush of this.customBrushes) {
@@ -788,48 +879,13 @@ export class ReactiveMapEditor {
                 const scale = Math.min(1, maxBrushWidth / brush.preview.width);
                 const width = brush.preview.width * scale;
                 const height = brush.preview.height * scale;
-                
+
                 if (y >= currentY && y <= currentY + height && 
                     x >= 10 && x <= 10 + width) {
                     this.selectCustomBrush(brush.id);
                     return;
                 }
-                
-                currentY += height + 10; // brush height + spacing
-            }
-        }
-    }
 
-    private handlePaletteRightClick(x: number, y: number): void {
-        if (!this.tilemap.isLoaded()) return;
-        
-        const tilemapHeight = Math.ceil(this.tilemap.width * this.tilemap.height / this.tilemap.width) * 
-            (this.tilemap.tileHeight + this.tilemap.spacing) + 10;
-        
-        // Skip if clicking in tilemap section
-        if (y < tilemapHeight) {
-            return;
-        }
-        
-        // Handle right click in custom brushes section
-        let currentY = tilemapHeight + 20; // Add spacing for separator
-        currentY += 32 + 10; // Skip "Add Brush" button + spacing
-        
-        // Check each brush
-        const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
-        for (const brush of this.customBrushes) {
-            if (brush.preview) {
-                const scale = Math.min(1, maxBrushWidth / brush.preview.width);
-                const width = brush.preview.width * scale;
-                const height = brush.preview.height * scale;
-                
-                if (y >= currentY && y <= currentY + height && 
-                    x >= 10 && x <= 10 + width) {
-                    editorStore.setShowCustomBrushDialog(true);
-                    editorStore.setCustomBrushDialogId(brush.id);
-                    return;
-                }
-                
                 currentY += height + 10; // brush height + spacing
             }
         }
@@ -962,6 +1018,46 @@ export class ReactiveMapEditor {
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
 
+        // Handle tile selection in palette
+        if (this.isSelectingTiles) {
+            const tilePos = this.getTileFromPaletteCoords(mouseX, mouseY);
+            if (tilePos) {
+                this.selectionEndX = tilePos.tileX;
+                this.selectionEndY = tilePos.tileY;
+            } else {
+                // If outside valid tiles, clamp to nearest valid tile
+                const paletteX = 10;
+                const paletteY = 10;
+                const tilesPerRow = this.tilemap.width;
+                const totalTiles = this.tilemap.width * this.tilemap.height;
+                const totalRows = Math.ceil(totalTiles / tilesPerRow);
+
+                // Calculate raw tile coordinates
+                let tileX = Math.floor((mouseX - paletteX) / (this.tilemap.tileWidth + this.tilemap.spacing));
+                let tileY = Math.floor((mouseY - paletteY) / (this.tilemap.tileHeight + this.tilemap.spacing));
+
+                // Clamp both X and Y independently first
+                tileX = Math.max(0, Math.min(tilesPerRow - 1, tileX));
+                tileY = Math.max(0, Math.min(totalRows - 1, tileY));
+
+                // Then check if the resulting tile index is valid
+                const tileIndex = tileY * tilesPerRow + tileX;
+                if (tileIndex < totalTiles) {
+                    this.selectionEndX = tileX;
+                    this.selectionEndY = tileY;
+                } else {
+                    // If the tile index is invalid, adjust X to fit within the last row
+                    const maxXForLastRow = (totalTiles - 1) % tilesPerRow;
+                    if (tileY === totalRows - 1) {
+                        tileX = Math.min(tileX, maxXForLastRow);
+                        this.selectionEndX = tileX;
+                        this.selectionEndY = tileY;
+                    }
+                }
+            }
+            return;
+        }
+
         // Handle panning
         if (this.isPanning) {
             const deltaX = mouseX - this.lastPanX;
@@ -1073,6 +1169,26 @@ export class ReactiveMapEditor {
         // Reset rectangle drawing state
         this.rectangleStartX = null;
         this.rectangleStartY = null;
+
+        // Handle tile selection completion
+        if (this.isSelectingTiles) {
+            if (this.selectionStartX === this.selectionEndX && this.selectionStartY === this.selectionEndY) {
+                // Single tile selection - only if start and end are the same
+                const tileIndex = this.selectionStartY! * this.tilemap.width + this.selectionStartX!;
+                toolFSM.send('selectTile', tileIndex);
+            } else {
+                console.log('Creating temporary brush from selection');
+                // Multi-tile selection - create temporary brush
+                this.createTemporaryBrushFromSelection();
+            }
+            // Reset selection state
+            this.isSelectingTiles = false;
+            this.selectionStartX = null;
+            this.selectionStartY = null;
+            this.selectionEndX = null;
+            this.selectionEndY = null;
+            return;
+        }
 
         // If we modified anything during this paint operation, save the state
         if (this.hasModifiedDuringPaint && this.undoBuffer) {
@@ -1647,6 +1763,105 @@ export class ReactiveMapEditor {
             // Pop and apply the last state from redo stack
             const nextState = this.redoStack.pop()!;
             this.mapData = cloneMapData(nextState);
+        }
+    }
+
+    private getTileFromPaletteCoords(x: number, y: number): { tileX: number, tileY: number } | null {
+        const paletteX = 10;
+        const paletteY = 10;
+        const tilesPerRow = this.tilemap.width;
+
+        // Calculate the tile position within the palette
+        const tileX = Math.floor((x - paletteX) / (this.tilemap.tileWidth + this.tilemap.spacing));
+        const tileY = Math.floor((y - paletteY) / (this.tilemap.tileHeight + this.tilemap.spacing));
+        
+        // Check if the click is within the actual tilemap bounds
+        if (tileX >= 0 && tileX < this.tilemap.width && 
+            tileY >= 0 && (tileY * tilesPerRow + tileX) < this.tilemap.width * this.tilemap.height) {
+            return { tileX, tileY };
+        }
+        return null;
+    }
+
+    private createTemporaryBrushFromSelection() {
+        console.log('Creating brush from selection');
+        if (this.selectionStartX === null || this.selectionStartY === null || 
+            this.selectionEndX === null || this.selectionEndY === null) {
+            console.log('Selection coordinates are invalid:', {
+                startX: this.selectionStartX,
+                startY: this.selectionStartY,
+                endX: this.selectionEndX,
+                endY: this.selectionEndY
+            });
+            return;
+        }
+
+        const startX = Math.min(this.selectionStartX, this.selectionEndX);
+        const startY = Math.min(this.selectionStartY, this.selectionEndY);
+        const endX = Math.max(this.selectionStartX, this.selectionEndX);
+        const endY = Math.max(this.selectionStartY, this.selectionEndY);
+
+        console.log('Selection bounds:', { startX, startY, endX, endY });
+
+        const width = endX - startX + 1;
+        const height = endY - startY + 1;
+        const tiles: number[][] = [];
+
+        console.log('Creating brush with dimensions:', { width, height });
+
+        // Create the tile array
+        for (let y = 0; y < height; y++) {
+            const row: number[] = [];
+            for (let x = 0; x < width; x++) {
+                const tileX = startX + x;
+                const tileY = startY + y;
+                const tileIndex = tileY * this.tilemap.width + tileX;
+                row.push(tileIndex);
+            }
+            tiles.push(row);
+        }
+
+        console.log('Created tile array:', tiles);
+
+        // Create and select the temporary brush
+        const brush = this.createCustomBrush(`${width}x${height} Selection`, tiles);
+        console.log('Created brush:', brush);
+        this.selectCustomBrush(brush.id);
+        console.log('Selected brush:', this.selectedCustomBrush);
+    }
+
+    private handlePaletteRightClick(x: number, y: number): void {
+        if (!this.tilemap.isLoaded()) return;
+        
+        const tilemapHeight = Math.ceil(this.tilemap.width * this.tilemap.height / this.tilemap.width) * 
+            (this.tilemap.tileHeight + this.tilemap.spacing) + 10;
+        
+        // Skip if clicking in tilemap section
+        if (y < tilemapHeight) {
+            return;
+        }
+        
+        // Handle right click in custom brushes section
+        let currentY = tilemapHeight + 20; // Add spacing for separator
+        currentY += 32 + 10; // Skip "Add Brush" button + spacing
+        
+        // Check each brush
+        const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
+        for (const brush of this.customBrushes) {
+            if (brush.preview) {
+                const scale = Math.min(1, maxBrushWidth / brush.preview.width);
+                const width = brush.preview.width * scale;
+                const height = brush.preview.height * scale;
+                
+                if (y >= currentY && y <= currentY + height && 
+                    x >= 10 && x <= 10 + width) {
+                    editorStore.setShowCustomBrushDialog(true);
+                    editorStore.setCustomBrushDialogId(brush.id);
+                    return;
+                }
+                
+                currentY += height + 10; // brush height + spacing
+            }
         }
     }
 }

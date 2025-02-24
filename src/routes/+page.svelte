@@ -123,6 +123,10 @@
     });
 </script>
 
+<svelte:head>
+    <title>miunau's map editor</title>
+</svelte:head>
+
 <main>
     {#if editor}
         <Toolbar />
