@@ -59,6 +59,9 @@ export class ReactiveMapEditor {
         down: false
     });
 
+    // For first-time help message
+    hasShownHelpMessage = $state(false);
+
     // For painting
     isPainting = $state(false);
     paintTile = $state<number | null>(null);
@@ -549,6 +552,45 @@ export class ReactiveMapEditor {
             }
         }
 
+        // Draw help message if not shown before
+        if (!this.hasShownHelpMessage) {
+            const tilemapWidth = tilesPerRow * (this.tilemap.tileWidth + this.tilemap.spacing);
+            const messageX = paletteX + tilemapWidth + 20;
+            const messageY = paletteY + 20;
+
+            this.ctx.font = '11px MS Sans Serif';
+            this.ctx.fillStyle = '#ffffff';
+            this.ctx.textBaseline = 'top';
+            this.ctx.imageSmoothingEnabled = false;
+            
+            // Draw with a dark outline for better visibility
+            const messages = [
+                'Palette usage:',
+                '- WASD to navigate tiles.',
+                '- Click to select a tile.',
+                '- Drag to create a custom brush (esc to cancel).'
+            ];
+
+            messages.forEach((msg, i) => {
+                // Draw dilated text by drawing at slight offsets
+                this.ctx.fillStyle = '#000000';
+                [-1, 0, 1].forEach(dx => {
+                    [-1, 0, 1].forEach(dy => {
+                        this.ctx.fillText(msg, messageX + dx, messageY + i * 20 + dy);
+                    });
+                });
+                
+                // Draw main text
+                this.ctx.fillStyle = '#ffffff';
+                this.ctx.fillText(msg, messageX, messageY + i * 20);
+            });
+
+            // Mark as shown after a delay
+            setTimeout(() => {
+                this.hasShownHelpMessage = true;
+            }, 30000); // Hide after 10 seconds
+        }
+
         // Draw the selection highlight for regular tiles
         if (!this.isCustomBrushMode) {
             if (this.isSelectingTiles && this.selectionStartX !== null && this.selectionStartY !== null &&
@@ -626,14 +668,16 @@ export class ReactiveMapEditor {
         const maxBrushWidth = tilesPerRow * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
         const brushSpacing = 10;
         let currentY = brushSectionY;
+        let currentX = paletteX;
+        let maxHeightInRow = 0;
 
         // Draw "Add Brush" button
         const addBrushSize = 32;
         this.ctx.fillStyle = '#444';
-        this.ctx.fillRect(paletteX, currentY, addBrushSize, addBrushSize);
+        this.ctx.fillRect(currentX, currentY, addBrushSize, addBrushSize);
         this.ctx.strokeStyle = '#666';
         this.ctx.lineWidth = 1;
-        this.ctx.strokeRect(paletteX, currentY, addBrushSize, addBrushSize);
+        this.ctx.strokeRect(currentX, currentY, addBrushSize, addBrushSize);
         
         // Draw plus symbol
         this.ctx.strokeStyle = '#fff';
@@ -641,13 +685,14 @@ export class ReactiveMapEditor {
         const center = addBrushSize / 2;
         const size = addBrushSize / 3;
         this.ctx.beginPath();
-        this.ctx.moveTo(paletteX + center, currentY + center - size/2);
-        this.ctx.lineTo(paletteX + center, currentY + center + size/2);
-        this.ctx.moveTo(paletteX + center - size/2, currentY + center);
-        this.ctx.lineTo(paletteX + center + size/2, currentY + center);
+        this.ctx.moveTo(currentX + center, currentY + center - size/2);
+        this.ctx.lineTo(currentX + center, currentY + center + size/2);
+        this.ctx.moveTo(currentX + center - size/2, currentY + center);
+        this.ctx.lineTo(currentX + center + size/2, currentY + center);
         this.ctx.stroke();
 
-        currentY += addBrushSize + brushSpacing;
+        currentX += addBrushSize + brushSpacing;
+        maxHeightInRow = addBrushSize;
 
         // Draw each custom brush
         for (const brush of this.customBrushes) {
@@ -656,10 +701,17 @@ export class ReactiveMapEditor {
                 const width = brush.preview.width * scale;
                 const height = brush.preview.height * scale;
 
+                // Check if we need to wrap to next row
+                if (currentX + width > paletteX + maxBrushWidth) {
+                    currentX = paletteX;
+                    currentY += maxHeightInRow + brushSpacing;
+                    maxHeightInRow = 0;
+                }
+
                 // Draw brush preview
                 this.ctx.drawImage(
                     brush.preview,
-                    paletteX,
+                    currentX,
                     currentY,
                     width,
                     height
@@ -670,7 +722,7 @@ export class ReactiveMapEditor {
                     this.ctx.strokeStyle = '#000000';
                     this.ctx.lineWidth = 3;
                     this.ctx.strokeRect(
-                        paletteX - 2,
+                        currentX - 2,
                         currentY - 2,
                         width + 4,
                         height + 4
@@ -679,14 +731,16 @@ export class ReactiveMapEditor {
                     this.ctx.strokeStyle = '#ffff00';
                     this.ctx.lineWidth = 2;
                     this.ctx.strokeRect(
-                        paletteX - 2,
+                        currentX - 2,
                         currentY - 2,
                         width + 4,
                         height + 4
                     );
                 }
 
-                currentY += height + brushSpacing;
+                // Update position for next brush
+                currentX += width + brushSpacing;
+                maxHeightInRow = Math.max(maxHeightInRow, height);
             }
         }
     }
@@ -699,18 +753,38 @@ export class ReactiveMapEditor {
         
         // Add height for custom brushes section
         let customBrushesHeight = 20; // Spacing and separator
-        customBrushesHeight += 32 + 10; // Add brush button + spacing
         
-        // Add height for each brush preview
+        // Calculate height needed for custom brushes
         const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
+        const brushSpacing = 10;
+        let currentX = 10;
+        let currentRowHeight = 32; // Start with height of Add Brush button
+        let totalHeight = currentRowHeight;
+
+        // Calculate height considering wrapping
         for (const brush of this.customBrushes) {
             if (brush.preview) {
                 const scale = Math.min(1, maxBrushWidth / brush.preview.width);
-                customBrushesHeight += brush.preview.height * scale + 10; // brush height + spacing
+                const width = brush.preview.width * scale;
+                const height = brush.preview.height * scale;
+
+                // Check if we need to wrap to next row
+                if (currentX + width > 10 + maxBrushWidth) {
+                    totalHeight += currentRowHeight + brushSpacing;
+                    currentRowHeight = height;
+                    currentX = 10;
+                } else {
+                    currentRowHeight = Math.max(currentRowHeight, height);
+                }
+
+                currentX += width + brushSpacing;
             }
         }
+
+        // Add the height of the last row
+        totalHeight += brushSpacing;
         
-        return tilemapHeight + customBrushesHeight;
+        return tilemapHeight + customBrushesHeight + totalHeight;
     }
 
     // Handle palette interaction
@@ -1352,23 +1426,9 @@ export class ReactiveMapEditor {
                     if (selectedTile >= this.tilemap.width) {
                         // Move up in tilemap
                         toolFSM.send('selectTile', selectedTile - this.tilemap.width);
-                    } else if (this.customBrushes.length > 0) {
-                        // Move to the last custom brush when at the top of tilemap
-                        this.selectCustomBrush(this.customBrushes[this.customBrushes.length - 1].id);
                     }
                 } else {
-                    // Find current brush index
-                    const currentIndex = this.customBrushes.findIndex(b => b.id === this.selectedCustomBrush?.id);
-                    if (currentIndex > 0) {
-                        // Move up in custom brushes
-                        this.selectCustomBrush(this.customBrushes[currentIndex - 1].id);
-                    } else if (currentIndex === 0) {
-                        // Move to tilemap when at the top of custom brushes
-                        this.selectCustomBrush(null);
-                        const lastRow = Math.floor((this.tilemap.width * this.tilemap.height - 1) / this.tilemap.width);
-                        const lastRowFirstTile = lastRow * this.tilemap.width;
-                        toolFSM.send('selectTile', lastRowFirstTile);
-                    }
+                    this.navigateBrushGrid('up');
                 }
                 break;
             case 's':
@@ -1378,17 +1438,15 @@ export class ReactiveMapEditor {
                     if (selectedTile < (this.tilemap.width * (this.tilemap.height - 1))) {
                         // Move down in tilemap
                         toolFSM.send('selectTile', selectedTile + this.tilemap.width);
-                    } else if (this.customBrushes.length > 0) {
+                    } else {
                         // Move to first custom brush when at bottom of tilemap
-                        this.selectCustomBrush(this.customBrushes[0].id);
+                        const firstBrush = this.customBrushes[0];
+                        if (firstBrush) {
+                            this.selectCustomBrush(firstBrush.id);
+                        }
                     }
                 } else {
-                    // Find current brush index
-                    const currentIndex = this.customBrushes.findIndex(b => b.id === this.selectedCustomBrush?.id);
-                    if (currentIndex < this.customBrushes.length - 1) {
-                        // Move down in custom brushes
-                        this.selectCustomBrush(this.customBrushes[currentIndex + 1].id);
-                    }
+                    this.navigateBrushGrid('down');
                 }
                 break;
             case 'a':
@@ -1398,6 +1456,8 @@ export class ReactiveMapEditor {
                     if (selectedTile > 0) {
                         toolFSM.send('selectTile', selectedTile - 1);
                     }
+                } else {
+                    this.navigateBrushGrid('left');
                 }
                 break;
             case 'd':
@@ -1407,6 +1467,8 @@ export class ReactiveMapEditor {
                     if (selectedTile < this.tilemap.width * this.tilemap.height - 1) {
                         toolFSM.send('selectTile', selectedTile + 1);
                     }
+                } else {
+                    this.navigateBrushGrid('right');
                 }
                 break;
             case 'escape':
@@ -1633,6 +1695,15 @@ export class ReactiveMapEditor {
     }
 
     // Custom brush methods
+    private recreateBrushPreview(brush: Omit<CustomBrush, 'preview' | 'id'> | CustomBrush): HTMLCanvasElement {
+        return createBrushPreview(
+            brush,
+            (index) => this.tilemap.getTile(index),
+            this.tilemap.tileWidth,
+            this.tilemap.tileHeight
+        );
+    }
+
     createCustomBrush(name: string | null, tiles: number[][]): CustomBrush {
         const brush: Omit<CustomBrush, 'preview' | 'id'> = {
             name: name || `${tiles[0].length}x${tiles.length} Brush`,
@@ -1641,12 +1712,7 @@ export class ReactiveMapEditor {
             height: tiles.length
         };
 
-        const preview = createBrushPreview(
-            brush,
-            (index) => this.tilemap.getTile(index),
-            this.tilemap.tileWidth,
-            this.tilemap.tileHeight
-        );
+        const preview = this.recreateBrushPreview(brush);
 
         const customBrush: CustomBrush = {
             ...brush,
@@ -1669,12 +1735,7 @@ export class ReactiveMapEditor {
             height: tiles.length
         };
 
-        const preview = createBrushPreview(
-            brush,
-            (index) => this.tilemap.getTile(index),
-            this.tilemap.tileWidth,
-            this.tilemap.tileHeight
-        );
+        const preview = this.recreateBrushPreview(brush);
 
         const customBrush: CustomBrush = {
             ...brush,
@@ -1742,6 +1803,13 @@ export class ReactiveMapEditor {
         // Load the new tilemap
         try {
             await this.tilemap.load();
+            
+            // Recreate all brush previews with the new tilemap
+            for (let i = 0; i < this.customBrushes.length; i++) {
+                const brush = this.customBrushes[i];
+                brush.preview = this.recreateBrushPreview(brush);
+            }
+            
             this.centerMap();
         } catch (error) {
             console.error('Failed to load new tilemap:', error);
@@ -1865,26 +1933,185 @@ export class ReactiveMapEditor {
         }
         
         // Handle right click in custom brushes section
-        let currentY = tilemapHeight + 20; // Add spacing for separator
-        currentY += 32 + 10; // Skip "Add Brush" button + spacing
+        const brushSectionY = tilemapHeight + 20; // Add spacing for separator
+        const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
+        const brushSpacing = 10;
+        let currentY = brushSectionY;
+        let currentX = 10;
+        let maxHeightInRow = 0;
+
+        // Skip "Add Brush" button
+        const addBrushSize = 32;
+        currentX += addBrushSize + brushSpacing;
+        maxHeightInRow = addBrushSize;
         
         // Check each brush
-        const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
         for (const brush of this.customBrushes) {
             if (brush.preview) {
                 const scale = Math.min(1, maxBrushWidth / brush.preview.width);
                 const width = brush.preview.width * scale;
                 const height = brush.preview.height * scale;
+
+                // Check if we need to wrap to next row
+                if (currentX + width > 10 + maxBrushWidth) {
+                    currentX = 10;
+                    currentY += maxHeightInRow + brushSpacing;
+                    maxHeightInRow = 0;
+                }
                 
                 if (y >= currentY && y <= currentY + height && 
-                    x >= 10 && x <= 10 + width) {
+                    x >= currentX && x <= currentX + width) {
                     editorStore.setShowCustomBrushDialog(true);
                     editorStore.setCustomBrushDialogId(brush.id);
                     return;
                 }
-                
-                currentY += height + 10; // brush height + spacing
+
+                currentX += width + brushSpacing;
+                maxHeightInRow = Math.max(maxHeightInRow, height);
             }
+        }
+    }
+
+    // Custom brush methods
+    private getBrushGridPosition(brush: CustomBrush): { row: number, col: number } | null {
+        const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
+        const brushSpacing = 10;
+        let currentX = 10;
+        let currentY = 0;
+        let currentRow = 0;
+        let currentCol = 0;
+
+        // Account for Add Brush button
+        const addBrushSize = 32;
+        currentX += addBrushSize + brushSpacing;
+        
+        // Find position of each brush
+        for (const b of this.customBrushes) {
+            if (b.preview) {
+                const scale = Math.min(1, maxBrushWidth / b.preview.width);
+                const width = b.preview.width * scale;
+
+                // Check if we need to wrap to next row
+                if (currentX + width > 10 + maxBrushWidth) {
+                    currentX = 10;
+                    currentRow++;
+                    currentCol = 0;
+                }
+
+                if (b.id === brush.id) {
+                    return { row: currentRow, col: currentCol };
+                }
+
+                currentX += width + brushSpacing;
+                currentCol++;
+            }
+        }
+        return null;
+    }
+
+    private getBrushAtGridPosition(targetRow: number, targetCol: number): CustomBrush | null {
+        const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
+        const brushSpacing = 10;
+        let currentX = 10;
+        let currentRow = 0;
+        let currentCol = 0;
+
+        // Account for Add Brush button
+        const addBrushSize = 32;
+        currentX += addBrushSize + brushSpacing;
+        
+        // Find brush at target position
+        for (const brush of this.customBrushes) {
+            if (brush.preview) {
+                const scale = Math.min(1, maxBrushWidth / brush.preview.width);
+                const width = brush.preview.width * scale;
+
+                // Check if we need to wrap to next row
+                if (currentX + width > 10 + maxBrushWidth) {
+                    currentX = 10;
+                    currentRow++;
+                    currentCol = 0;
+                }
+
+                if (currentRow === targetRow && currentCol === targetCol) {
+                    return brush;
+                }
+
+                currentX += width + brushSpacing;
+                currentCol++;
+            }
+        }
+        return null;
+    }
+
+    private navigateBrushGrid(direction: 'up' | 'down' | 'left' | 'right'): void {
+        if (!this.isCustomBrushMode || !this.selectedCustomBrush) {
+            // If not in brush mode and moving down from tilemap, select first brush
+            if (direction === 'down') {
+                const firstBrush = this.customBrushes[0];
+                if (firstBrush) {
+                    this.selectCustomBrush(firstBrush.id);
+                }
+            }
+            return;
+        }
+
+        const currentPos = this.getBrushGridPosition(this.selectedCustomBrush);
+        if (!currentPos) return;
+
+        let targetBrush: CustomBrush | null = null;
+
+        switch (direction) {
+            case 'up':
+                if (currentPos.row === 0) {
+                    // Move to tilemap
+                    this.selectCustomBrush(null);
+                    const lastRow = Math.floor((this.tilemap.width * this.tilemap.height - 1) / this.tilemap.width);
+                    const lastRowFirstTile = lastRow * this.tilemap.width;
+                    toolFSM.send('selectTile', lastRowFirstTile);
+                } else {
+                    // Try to find brush directly above
+                    targetBrush = this.getBrushAtGridPosition(currentPos.row - 1, currentPos.col);
+                    
+                    // If no brush directly above, try to find the last brush in the row above
+                    if (!targetBrush) {
+                        for (let col = currentPos.col; col >= 0; col--) {
+                            const brush = this.getBrushAtGridPosition(currentPos.row - 1, col);
+                            if (brush) {
+                                targetBrush = brush;
+                                break;
+                            }
+                        }
+                    }
+                }
+                break;
+            case 'down':
+                // Try to find brush directly below
+                targetBrush = this.getBrushAtGridPosition(currentPos.row + 1, currentPos.col);
+                
+                // If no brush directly below, try to find the last brush in the row below
+                if (!targetBrush) {
+                    for (let col = currentPos.col; col >= 0; col--) {
+                        const brush = this.getBrushAtGridPosition(currentPos.row + 1, col);
+                        if (brush) {
+                            targetBrush = brush;
+                            break;
+                        }
+                    }
+                }
+                break;
+            case 'left':
+                if (currentPos.col > 0) {
+                    targetBrush = this.getBrushAtGridPosition(currentPos.row, currentPos.col - 1);
+                }
+                break;
+            case 'right':
+                targetBrush = this.getBrushAtGridPosition(currentPos.row, currentPos.col + 1);
+                break;
+        }
+
+        if (targetBrush) {
+            this.selectCustomBrush(targetBrush.id);
         }
     }
 }

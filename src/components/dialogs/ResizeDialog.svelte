@@ -40,16 +40,22 @@
     {/snippet}
 
     <div class="dialog-content">
-        <label>
-            Width:
-            <input type="number" bind:value={width} min="1" max="100" />
-        </label>
-        <label>
-            Height:
-            <input type="number" bind:value={height} min="1" max="100" />
-        </label>
+        <div class="fields row">
+            <div class="field">
+                <label for="width">
+                    Width:
+                </label>
+                <input id="width" type="number" bind:value={width} min="1" max="100" />
+            </div>
+            <div class="field">
+                <label for="height">
+                    Height:
+                </label>
+                <input id="height" type="number" bind:value={height} min="1" max="100" />
+            </div>
+        </div>
         <hr/>
-        <h4>Content Alignment</h4>
+        <h4>Content alignment</h4>
         <div class="alignment-picker">
             <div class="alignment-grid">
                 {#each alignments as align}

@@ -11,6 +11,7 @@
     import IconImport from './icons/IconImport.svelte';
     import IconInfo from './icons/IconInfo.svelte';
     import IconLayer from './icons/IconLayer.svelte';
+  import IconMagnifyingGlass from './icons/IconMagnifyingGlass.svelte';
     import IconNewFile from './icons/IconNewFile.svelte';
     import IconPaintBucket from './icons/IconPaintBucket.svelte';
     import IconRectangle from './icons/IconRectangle.svelte';
@@ -133,7 +134,7 @@
     </div>
     <div class="stack">
         <span>
-            <IconZoomOut /> Zoom (Z/X)
+            <IconMagnifyingGlass /> Zoom (Z/X)
         </span>
         <div class="buttons">
             <button 
@@ -164,6 +165,7 @@
     .controls {
         display: flex;
         align-items: center;
+        gap: 16px;
         padding-bottom: 8px;
     }
 
@@ -180,7 +182,6 @@
         align-items: start;
         justify-content: space-between;
         height: 100%;
-        padding: 0 8px;
     }
 
     .stack span button {
@@ -207,12 +208,13 @@
 
     .brush-controls {
         display: flex;
+        gap: 0;
         align-items: center;
     }
 
     .tool-buttons {
         display: flex;
-        gap: 4px;
+        gap: 0px;
     }
 
     .brush-size {

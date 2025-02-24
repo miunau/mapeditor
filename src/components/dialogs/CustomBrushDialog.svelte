@@ -1,6 +1,7 @@
 <script lang="ts">
     import { editorStore } from '../../lib/state/EditorStore.svelte.js';
     import { drawTile } from '../../lib/drawTile';
+    import Dialog from './Dialog.svelte';
 
     let name: string | null = $state('');
     let width = $state(3);
@@ -14,6 +15,11 @@
     let isDragging = $state(false);
     let previewTarget: { x: number, y: number } | null = $state(null);
     let draggedPaletteTile = $state<number | null>(null);
+
+    // Compute the display tile size (2x actual size, max 32px)
+    let displayTileSize = $derived(Math.min(32, (editorStore.editor?.tilemap.tileWidth || 16) * 2));
+
+    $inspect(displayTileSize);
 
     // Track shift key state
     function handleKeyDown(e: KeyboardEvent) {
@@ -160,13 +166,17 @@
         } else {
             editorStore.editor?.createCustomBrush(name, tiles);
         }
-        editorStore.setShowCustomBrushDialog(false);
+        closeDialog();
     }
 
     function handleDelete() {
         if (editorStore.customBrushDialogId) {
             editorStore.editor?.deleteCustomBrush(editorStore.customBrushDialogId);
         }
+        closeDialog();
+    }
+
+    function closeDialog() {
         editorStore.setShowCustomBrushDialog(false);
     }
 
@@ -204,41 +214,63 @@
     }
 </script>
 
-{#if editorStore.showCustomBrushDialog}
-<div class="dialog">
-    <h3>{editorStore.customBrushDialogId ? 'Edit' : 'Create'} Custom Brush</h3>
+<Dialog 
+    title={editorStore.customBrushDialogId ? 'Edit Custom Brush' : 'Create Custom Brush'} 
+    show={editorStore.showCustomBrushDialog} 
+    onClose={closeDialog}
+>
+    {#snippet buttonArea()}
+        <div class="button-area">
+            <div class="left">
+                {#if editorStore.customBrushDialogId}
+                    <button class="delete" onclick={handleDelete}>Delete</button>
+                {/if}
+            </div>
+            <div class="right">
+                <button onclick={handleSave}>{editorStore.customBrushDialogId ? 'Save' : 'Create'}</button>
+                <button onclick={closeDialog}>Cancel</button>
+            </div>
+        </div>
+    {/snippet}
+
     <div class="dialog-content">
-        <div class="brush-dimensions">
-            <label>
-                Width:
+        <div class="options">
+            <p><strong>Options</strong></p>
+            <div class="brush-dimensions">
+                <label for="width">
+                    Width:
+                </label>
                 <input 
+                    id="width"
                     type="number" 
                     bind:value={width} 
                     min="1" 
                     max="9"
                     onchange={updateBrushDimensions}
                 />
-            </label>
-            <label>
-                Height:
+                <label for="height">
+                    Height:
+                </label>
                 <input 
+                    id="height"
                     type="number" 
                     bind:value={height} 
                     min="1" 
                     max="9"
                     onchange={updateBrushDimensions}
                 />
-            </label>
-        </div>
-        <div class="brush-options">
-            <label class="checkbox-label">
+            </div>
+            <div class="brush-options">
                 <input 
+                    id="world-aligned-repeat"
                     type="checkbox" 
                     checked={editorStore.editor?.useWorldAlignedRepeat}
                     onchange={(e) => editorStore.editor && (editorStore.editor.useWorldAlignedRepeat = e.currentTarget.checked)}
                 />
-                World-aligned repeat (Pattern repeats relative to world grid instead of brush position)
-            </label>
+                <label for="world-aligned-repeat">
+                    World-aligned repeat
+                </label>
+            </div>
         </div>
 
         <div class="brush-editor">
@@ -257,8 +289,9 @@
                         <div class="tilemap-grid" style="--tilemap-width: {editorStore.editor.tilemap.width}">
                             {#each Array(editorStore.editor.tilemap.width * editorStore.editor.tilemap.height) as _, i}
                                 <button 
-                                    class="tile-cell"
+                                    class="tile-cell button-none"
                                     class:selected={selectedTile === i}
+                                    aria-label={`Select tile ${i}`}
                                     onclick={() => selectedTile = i}
                                     draggable="true"
                                     ondragstart={(e) => {
@@ -269,6 +302,7 @@
                                         draggedPaletteTile = null;
                                     }}
                                     tabindex="-1"
+                                    style="--tile-size: {displayTileSize}px"
                                 >
                                     <canvas 
                                         width={editorStore.editor.tilemap.tileWidth}
@@ -289,7 +323,7 @@
                     {#each tiles as row, y}
                         {#each row as tile, x}
                             <button 
-                                class="tile-cell"
+                                class="tile-cell button-none"
                                 class:empty={tile === -1}
                                 class:dragging={dragSource?.x === x && dragSource?.y === y}
                                 class:drag-target={(dragTarget?.x === x && dragTarget?.y === y) || (!isDragging && previewTarget?.x === x && previewTarget?.y === y)}
@@ -319,6 +353,7 @@
                                     }
                                 }}
                                 tabindex="-1"
+                                style="--tile-size: {displayTileSize}px"
                             >
                                 {#if tile !== -1 && editorStore.editor}
                                     <canvas 
@@ -329,7 +364,7 @@
                                     ></canvas>
                                 {/if}
                                 {#if (isDragging && dragTarget?.x === x && dragTarget?.y === y && dragSource && editorStore.editor) || 
-                                     (!isDragging && previewTarget?.x === x && previewTarget?.y === y && draggedPaletteTile !== null && editorStore.editor)}
+                                    (!isDragging && previewTarget?.x === x && previewTarget?.y === y && draggedPaletteTile !== null && editorStore.editor)}
                                     <canvas 
                                         class="preview-tile"
                                         width={editorStore.editor.tilemap.tileWidth}
@@ -347,48 +382,33 @@
                 </div>
             </div>
         </div>
-
-        <div class="dialog-buttons">
-            <button onclick={handleSave}>{editorStore.customBrushDialogId ? 'Save' : 'Create'}</button>
-            {#if editorStore.customBrushDialogId}
-                <button class="delete" onclick={handleDelete}>Delete</button>
-            {/if}
-            <button onclick={() => editorStore.setShowCustomBrushDialog(false)}>Cancel</button>
-        </div>
     </div>
-</div>
-{/if}
+</Dialog>
 
 <style>
-    .dialog {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.9);
-        padding: 20px;
-        border-radius: 8px;
-        border: 1px solid #555;
-        color: white;
-        z-index: 1000;
-        max-height: 90vh;
-        overflow-y: auto;
-    }
-
-    .dialog h3 {
-        margin: 0 0 15px 0;
-        font-size: 18px;
-    }
-
     .dialog-content {
         width: 800px;
         max-width: 90vw;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .options {
+        display: flex;
+        gap: 10px;
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .options p {
+        margin: 0;
     }
 
     .brush-dimensions {
         display: flex;
-        gap: 20px;
-        margin-bottom: 20px;
+        gap: 10px;
     }
 
     .brush-dimensions label {
@@ -396,35 +416,23 @@
         align-items: center;
         gap: 10px;
     }
-
-    .brush-dimensions input {
-        width: 60px;
-        padding: 4px;
-        background: #444;
-        border: 1px solid #555;
-        border-radius: 4px;
-        color: white;
-    }
-
-    .brush-editor {
-        display: flex;
-        gap: 10px;
-    }
-
+    
     .tile-picker {
-        flex: 1;
+        flex: 2;
         min-width: 0;
+        background: #c0c0c0;
+        border: 1px solid #888;
+        padding: 10px;
     }
 
-    .tile-picker h4 {
-        margin: 0 0 6px 0;
-        font-size: 14px;
+    h4 {
+        font-weight: bold;
     }
 
     .tile-grid {
         padding: 6px;
-        background: #444;
-        border-radius: 4px;
+        background: #333;
+        border: 1px solid #888;
         max-height: 400px;
         overflow: auto;
         display: flex;
@@ -441,26 +449,23 @@
     .brush-grid-section {
         flex: 1;
         min-width: 0;
-    }
-
-    .brush-grid-section h4 {
-        margin: 0 0 6px 0;
-        font-size: 14px;
+        background: #c0c0c0;
+        border: 1px solid #888;
+        padding: 10px;
     }
 
     .brush-grid {
         display: grid;
         grid-template-columns: repeat(var(--grid-width), var(--tile-size, 32px));
         grid-template-rows: repeat(var(--grid-height), var(--tile-size, 32px));
-        gap: 0;
+        gap: 1px;
         padding: 6px;
-        background: #444;
-        border-radius: 4px;
+        background: #333;
+        border: 1px solid #888;
         justify-content: center;
     }
 
     .tile-cell {
-        --tile-size: 28px;
         width: var(--tile-size);
         height: var(--tile-size);
         padding: 0;
@@ -475,12 +480,12 @@
         user-select: none;
         -webkit-user-select: none;
         position: relative;
-        outline: none; /* Remove focus outline */
+        outline: none;
     }
 
     .tile-cell:hover {
         background: #3a3a3a;
-        z-index: 1; /* Ensure hover state appears above adjacent cells */
+        z-index: 1;
     }
 
     .tile-cell.empty {
@@ -518,39 +523,8 @@
         margin-right: 1px;
     }
 
-    .dialog-buttons {
-        display: flex;
-        justify-content: flex-end;
-        gap: 10px;
-        margin-top: 20px;
-        padding-top: 20px;
-        border-top: 1px solid #555;
-    }
-
-    .dialog-buttons button {
-        padding: 8px 16px;
-        background: #555;
-        border: 1px solid #666;
-        border-radius: 4px;
-        color: white;
-        cursor: pointer;
-    }
-
-    .dialog-buttons button:hover {
-        background: #666;
-    }
-
-    .dialog-buttons button.delete {
-        background: #aa0000;
-        border-color: #cc0000;
-    }
-
-    .dialog-buttons button.delete:hover {
-        background: #cc0000;
-    }
-
     .brush-options {
-        margin-bottom: 20px;
+        margin-bottom: 10px;
     }
 
     .checkbox-label {
@@ -559,6 +533,7 @@
         gap: 8px;
         cursor: pointer;
         user-select: none;
+        color: black;
     }
 
     .checkbox-label input[type="checkbox"] {
@@ -619,4 +594,18 @@
         opacity: 0.5;
         pointer-events: none;
     }
+
+    .button-area {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+    }
+
+    button.delete {
+        background: #aa0000;
+        border-color: #cc0000;
+        color: white;
+    }
+
 </style> 

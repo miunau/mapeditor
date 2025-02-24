@@ -65,51 +65,68 @@
 </script>
 
 <Dialog title="Tilemap Settings" onClose={closeDialog} show={editorStore.showTilemapDialog}>
+    {#snippet buttonArea()}
+        <button onclick={updateSettings}>Apply</button>
+        <button onclick={closeDialog}>Cancel</button>
+    {/snippet}
+
     {#if settings.url}
         <div class="image-preview">
             <img src={settings.url} alt="Tilemap preview" />
         </div>
     {/if}
     <div class="dialog-content">
-        <label>
-            Tilemap Image:
-            <input 
-                type="file" 
-                accept="image/*"
-                onchange={handleFileSelect}
-                bind:this={fileInput}
+        <div class="fields row">
+            <div class="field">
+                <label for="tilemap-image">
+                    Tilemap Image:
+                </label>
+                <input 
+                    id="tilemap-image"
+                    type="file" 
+                    accept="image/*"
+                    onchange={handleFileSelect}
+                    bind:this={fileInput}
+                />
+            </div>
+        </div>
+        <div class="fields row">
+            <div class="field">
+                <label for="tile-width">
+                    Tile Width:
+                </label>
+                <input 
+                    id="tile-width"
+                    type="number" 
+                    bind:value={settings.tileWidth} 
+                    min="1" 
+                    max="128"
             />
-        </label>
-        <label>
-            Tile Width:
-            <input 
-                type="number" 
-                bind:value={settings.tileWidth} 
-                min="1" 
-                max="128"
-            />
-        </label>
-        <label>
-            Tile Height:
-            <input 
-                type="number" 
-                bind:value={settings.tileHeight} 
-                min="1" 
-                max="128"
-            />
-        </label>
-        <label>
-            Spacing:
-            <input 
-                type="number" 
-                bind:value={settings.spacing} 
-                min="0" 
-                max="16"
-            />
-        </label>
-        <div class="dialog-buttons">
-            <button onclick={updateSettings}>Apply</button>
-            <button onclick={closeDialog}>Cancel</button>
+            </div>
+            <div class="field">
+                <label for="tile-height">
+                    Tile Height:
+                </label>
+                <input 
+                    id="tile-height"
+                    type="number" 
+                    bind:value={settings.tileHeight} 
+                    min="1" 
+                    max="128"
+                />
+            </div>
+            <div class="field">
+                <label for="spacing">
+                    Spacing:
+                </label>
+                <input 
+                    id="spacing"
+                    type="number" 
+                    bind:value={settings.spacing} 
+                    min="0" 
+                    max="16"
+                />
+            </div>
         </div>
     </div>
 </Dialog>
@@ -122,18 +139,6 @@
         margin-top: 16px;
     }
 
-    label {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
-    }
-
-    .dialog-buttons {
-        display: flex;
-        justify-content: flex-end;
-        gap: 10px;
-        margin-top: 10px;
-    }
 
     .image-preview {
         margin-top: 10px;

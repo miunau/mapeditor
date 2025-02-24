@@ -83,6 +83,10 @@ h1, h2, h3, h4, h5, h6, p, span, input, textarea, select, label, button {
     text-box: cap alphabetic;
 }
 
+p {
+    margin: 0;
+}
+
 h1, h2, h3, h4, h5, h6 {
     margin: 0 !important;
     font-size: 12px !important;
@@ -100,4 +104,30 @@ kbd {
     border-radius: 3px;
     padding: 2px 5px;
     font-family: "MS Sans Serif";
+}
+
+.fields {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+}
+
+.fields.row {
+    flex-direction: row;
+    gap: 10px;
+    width: 100%;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 5px;
+    width: 100%;
+}
+
+.field label {
+    width: 100%;
 }
