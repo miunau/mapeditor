@@ -4,7 +4,15 @@ import type { MapData, MapDimensions, CustomBrush } from './types/map';
 import { createEmptyMap, cloneMapData, validateMapDimensions } from './types/map';
 import type { Point, Rect } from './utils/coordinates';
 import { screenToMap, mapToScreen, isInMapBounds, getBrushArea, calculateMapCenter } from './utils/coordinates';
-import { generateBrushId, createBrushPreview, calculateBrushPattern } from './utils/brush';
+import { 
+    generateBrushId, 
+    createBrushPreview, 
+    calculateBrushPattern,
+    drawFloodFillPreview,
+    drawCustomBrushPreview,
+    drawRectanglePreview,
+    drawSingleTilePreview
+} from './utils/brush';
 import { findClosestZoomLevel, calculateZoomTransform, type ZoomLevel } from './utils/zoom';
 import { createMapMetadata, unpackMapData } from './utils/serialization';
 import type { ResizeAlignment } from './types/map';
@@ -342,35 +350,14 @@ export class ReactiveMapEditor {
             const targetValue = this.mapData[this.currentLayer][this.hoverY][this.hoverX];
             const previewLayer = this.mapData[this.currentLayer].map(row => [...row]);
             const filledPoints = floodFill(previewLayer, this.hoverX, this.hoverY, targetValue, -2);
-            
-            // Draw filled area preview
-            this.ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
-            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-            this.ctx.lineWidth = 2 / this.zoomLevel;
-            
-            filledPoints.forEach(point => {
-                const screenPos = mapToScreen(
-                    point.x,
-                    point.y,
-                    0,
-                    0,
-                    1,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight
-                );
-                this.ctx.fillRect(
-                    screenPos.x,
-                    screenPos.y,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight
-                );
-                this.ctx.strokeRect(
-                    screenPos.x,
-                    screenPos.y,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight
-                );
-            });
+            drawFloodFillPreview(
+                this.ctx,
+                filledPoints,
+                this.tilemap.tileWidth,
+                this.tilemap.tileHeight,
+                this.zoomLevel,
+                mapToScreen
+            );
         } else if (this.isDrawingRectangle && this.rectangleStartX !== null && this.rectangleStartY !== null) {
             // Draw rectangle preview
             const startX = Math.min(this.rectangleStartX, this.hoverX);
@@ -383,28 +370,46 @@ export class ReactiveMapEditor {
 
             if (this.isCustomBrushMode && this.selectedCustomBrush) {
                 // Preview custom brush pattern in rectangle
-                const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
-                const pattern = calculateBrushPattern(
+                drawCustomBrushPreview(
+                    this.ctx,
+                    this.selectedCustomBrush,
                     { x: startX, y: startY, width, height },
-                    { width: brushWidth, height: brushHeight },
-                    this.useWorldAlignedRepeat
+                    (index: number) => this.tilemap.getTile(index),
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.zoomLevel,
+                    mapToScreen,
+                    this.useWorldAlignedRepeat,
+                    isInMapBounds,
+                    this.getMapDimensions()
+                );
+            } else {
+                // Regular rectangle preview
+                drawRectanglePreview(
+                    this.ctx,
+                    startX,
+                    startY,
+                    width,
+                    height,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.zoomLevel,
+                    mapToScreen,
+                    { fillStyle: 'rgba(255, 255, 255, 0.1)' }
                 );
 
-                this.ctx.globalAlpha = 0.5;
-                for (let ty = 0; ty < height; ty++) {
-                    for (let tx = 0; tx < width; tx++) {
-                        const worldX = startX + tx;
-                        const worldY = startY + ty;
-
-                        if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
-                            const { sourceX, sourceY } = pattern[ty][tx];
-                            const tileIndex = tiles[sourceY][sourceX];
-                            if (tileIndex !== -1) {
-                                const tile = this.tilemap.getTile(tileIndex);
-                                if (tile) {
+                // Draw preview of tiles
+                const tileIndex = this.paintTile === null ? -1 : this.paintTile;
+                if (tileIndex !== -1) {
+                    const tile = this.tilemap.getTile(tileIndex);
+                    if (tile) {
+                        this.ctx.globalAlpha = 0.5;
+                        for (let y = startY; y <= endY; y++) {
+                            for (let x = startX; x <= endX; x++) {
+                                if (isInMapBounds(x, y, this.getMapDimensions())) {
                                     const screenPos = mapToScreen(
-                                        worldX,
-                                        worldY,
+                                        x,
+                                        y,
                                         0,
                                         0,
                                         1,
@@ -415,82 +420,15 @@ export class ReactiveMapEditor {
                                 }
                             }
                         }
+                        this.ctx.globalAlpha = 1.0;
                     }
-                }
-                this.ctx.globalAlpha = 1.0;
-            } else {
-                // Regular rectangle preview
-                const startPos = mapToScreen(
-                    startX,
-                    startY,
-                    0,
-                    0,
-                    1,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight
-                );
-
-                // Draw semi-transparent fill
-                this.ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-                this.ctx.fillRect(
-                    startPos.x,
-                    startPos.y,
-                    width * this.tilemap.tileWidth,
-                    height * this.tilemap.tileHeight
-                );
-
-                // Draw preview of tiles
-                const tileIndex = this.paintTile === null ? -1 : this.paintTile;
-                if (tileIndex !== -1) {
-                    this.ctx.globalAlpha = 0.5;
-                    const tile = this.tilemap.getTile(tileIndex);
-                    if (tile) {
-                        for (let y = startY; y <= endY; y++) {
-                            for (let x = startX; x <= endX; x++) {
-                                if (isInMapBounds(x, y, this.getMapDimensions())) {
-                                    const tilePos = mapToScreen(
-                                        x,
-                                        y,
-                                        0,
-                                        0,
-                                        1,
-                                        this.tilemap.tileWidth,
-                                        this.tilemap.tileHeight
-                                    );
-                                    this.ctx.drawImage(tile, tilePos.x, tilePos.y);
-                                }
-                            }
-                        }
-                    }
-                    this.ctx.globalAlpha = 1.0;
                 }
             }
-
-            // Draw border
-            const startPos = mapToScreen(
-                startX,
-                startY,
-                0,
-                0,
-                1,
-                this.tilemap.tileWidth,
-                this.tilemap.tileHeight
-            );
-            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-            this.ctx.lineWidth = 2 / this.zoomLevel;
-            this.ctx.strokeRect(
-                startPos.x,
-                startPos.y,
-                width * this.tilemap.tileWidth,
-                height * this.tilemap.tileHeight
-            );
         } else if (this.isCustomBrushMode && this.selectedCustomBrush) {
-            const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
+            const { tiles } = this.selectedCustomBrush;
             
             // If using rectangle tool and not actively drawing, only show top-left tile
             if (toolFSM.context.currentTool === 'rectangle' && !this.isDrawingRectangle) {
-                // Draw semi-transparent preview of just the top-left tile
-                this.ctx.globalAlpha = 0.5;
                 const tileIndex = tiles[0][0];  // Get top-left tile of brush
                 if (tileIndex !== -1) {
                     const tile = this.tilemap.getTile(tileIndex);
@@ -504,91 +442,32 @@ export class ReactiveMapEditor {
                             this.tilemap.tileWidth,
                             this.tilemap.tileHeight
                         );
-                        this.ctx.drawImage(tile, screenPos.x, screenPos.y);
+                        drawSingleTilePreview(
+                            this.ctx,
+                            tile,
+                            screenPos.x,
+                            screenPos.y,
+                            this.tilemap.tileWidth,
+                            this.tilemap.tileHeight,
+                            this.zoomLevel
+                        );
                     }
                 }
-                this.ctx.globalAlpha = 1.0;
-
-                // Draw border around single tile
-                const startPos = mapToScreen(
-                    this.hoverX,
-                    this.hoverY,
-                    0,
-                    0,
-                    1,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight
-                );
-                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-                this.ctx.lineWidth = 2 / this.zoomLevel;
-                this.ctx.strokeRect(
-                    startPos.x,
-                    startPos.y,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight
-                );
             } else {
                 // Regular custom brush preview with full brush size
-                // Calculate target dimensions based on brush size
                 const targetArea = getBrushArea(this.hoverX, this.hoverY, this.brushSize);
-                
-                // Calculate brush pattern
-                const pattern = calculateBrushPattern(
+                drawCustomBrushPreview(
+                    this.ctx,
+                    this.selectedCustomBrush,
                     targetArea,
-                    { width: brushWidth, height: brushHeight },
-                    this.useWorldAlignedRepeat
-                );
-
-                // Draw semi-transparent preview
-                this.ctx.globalAlpha = 0.5;
-
-                // Draw preview tiles using pattern
-                for (let ty = 0; ty < targetArea.height; ty++) {
-                    for (let tx = 0; tx < targetArea.width; tx++) {
-                        const worldX = targetArea.x + tx;
-                        const worldY = targetArea.y + ty;
-
-                        if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
-                            const { sourceX, sourceY } = pattern[ty][tx];
-                            const tileIndex = tiles[sourceY][sourceX];
-                            if (tileIndex !== -1) {
-                                const tile = this.tilemap.getTile(tileIndex);
-                                if (tile) {
-                                    const screenPos = mapToScreen(
-                                        worldX,
-                                        worldY,
-                                        0,
-                                        0,
-                                        1,
-                                        this.tilemap.tileWidth,
-                                        this.tilemap.tileHeight
-                                    );
-                                    this.ctx.drawImage(tile, screenPos.x, screenPos.y);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                this.ctx.globalAlpha = 1.0;
-
-                // Draw border around the entire brush area
-                const startPos = mapToScreen(
-                    targetArea.x,
-                    targetArea.y,
-                    0,
-                    0,
-                    1,
+                    (index: number) => this.tilemap.getTile(index),
                     this.tilemap.tileWidth,
-                    this.tilemap.tileHeight
-                );
-                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-                this.ctx.lineWidth = 2 / this.zoomLevel;
-                this.ctx.strokeRect(
-                    startPos.x,
-                    startPos.y,
-                    targetArea.width * this.tilemap.tileWidth,
-                    targetArea.height * this.tilemap.tileHeight
+                    this.tilemap.tileHeight,
+                    this.zoomLevel,
+                    mapToScreen,
+                    this.useWorldAlignedRepeat,
+                    isInMapBounds,
+                    this.getMapDimensions()
                 );
             }
         } else {
@@ -597,33 +476,17 @@ export class ReactiveMapEditor {
                 ? { x: this.hoverX, y: this.hoverY, width: 1, height: 1 }
                 : getBrushArea(this.hoverX, this.hoverY, this.brushSize);
             
-            const startPos = mapToScreen(
+            drawRectanglePreview(
+                this.ctx,
                 brushArea.x,
                 brushArea.y,
-                0,
-                0,
-                1,
+                brushArea.width,
+                brushArea.height,
                 this.tilemap.tileWidth,
-                this.tilemap.tileHeight
-            );
-
-            // Draw semi-transparent fill
-            this.ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-            this.ctx.fillRect(
-                startPos.x,
-                startPos.y,
-                brushArea.width * this.tilemap.tileWidth,
-                brushArea.height * this.tilemap.tileHeight
-            );
-
-            // Draw border
-            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-            this.ctx.lineWidth = 2 / this.zoomLevel;
-            this.ctx.strokeRect(
-                startPos.x,
-                startPos.y,
-                brushArea.width * this.tilemap.tileWidth,
-                brushArea.height * this.tilemap.tileHeight
+                this.tilemap.tileHeight,
+                this.zoomLevel,
+                mapToScreen,
+                { fillStyle: 'rgba(255, 255, 255, 0.1)' }
             );
         }
 
