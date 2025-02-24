@@ -1,0 +1,3 @@
+<svg xmlns="http://www.w3.org/2000/svg" x="0px" y="0px" width="16" height="16" viewBox="0 0 16 16">
+    <path fill="#4e7ab5" d="M1.316 11.28H5.8709999999999996V13.532H1.316z" transform="rotate(-45.001 3.593 12.407)"></path><path fill="#4e7ab5" d="M0 11L5 16 0 16z"></path><path fill="#4e7ab5" d="M11.28 10.129H13.532V14.684H11.28z" transform="rotate(-45.001 12.406 12.407)"></path><path fill="#4e7ab5" d="M16 11L11 16 16 16z"></path><path fill="#4e7ab5" d="M10.129 2.468H14.684V4.72H10.129z" transform="rotate(-45.001 12.406 3.594)"></path><path fill="#4e7ab5" d="M16 5L11 0 16 0z"></path><path fill="#4e7ab5" d="M2.468 1.316H4.72V5.8709999999999996H2.468z" transform="rotate(-45.001 3.593 3.594)"></path><path fill="#4e7ab5" d="M0 5L5 0 0 0z"></path>
+</svg>

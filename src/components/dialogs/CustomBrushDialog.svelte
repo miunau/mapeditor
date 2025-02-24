@@ -3,8 +3,8 @@
     import { drawTile } from '../../lib/drawTile';
 
     let name: string | null = $state('');
-    let width = $state(2);
-    let height = $state(2);
+    let width = $state(3);
+    let height = $state(3);
     let tiles: number[][] = $state([]);
     let selectedTile = $state(-1);
 

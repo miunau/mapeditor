@@ -1,0 +1,170 @@
+/* Common Dialog Styles */
+.dialog {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0, 0, 0, 0.9);
+    padding: 20px;
+    border-radius: 8px;
+    border: 1px solid #555;
+    color: white;
+    z-index: 1000;
+}
+
+.dialog.show {
+    display: block;
+}
+
+.dialog h3 {
+    margin: 0 0 15px 0;
+    font-size: 18px;
+}
+
+.dialog h4 {
+    margin: 0 0 10px 0;
+    font-size: 14px;
+}
+
+.dialog-content {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.dialog-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+/* Common Button Styles */
+button {
+    min-width: 80px;
+    padding: 8px 16px;
+    background: #555;
+    border: 1px solid #666;
+    border-radius: 4px;
+    color: white;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #666;
+}
+
+button.active {
+    background: #00aa00;
+    border-color: #00cc00;
+}
+
+button.delete {
+    background: #aa0000;
+    border-color: #cc0000;
+}
+
+button.delete:hover {
+    background: #cc0000;
+}
+
+/* Common Input Styles */
+input {
+    padding: 5px;
+    background: #444;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: white;
+    font-size: 14px;
+}
+
+input[type="file"] {
+    background: #444;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: white;
+    padding: 5px;
+    cursor: pointer;
+    width: 100%;
+}
+
+input[type="file"]::-webkit-file-upload-button {
+    background: #666;
+    border: none;
+    border-radius: 4px;
+    color: white;
+    padding: 8px 16px;
+    margin-right: 10px;
+    cursor: pointer;
+}
+
+input[type="file"]::-webkit-file-upload-button:hover {
+    background: #777;
+}
+
+/* Common Checkbox Styles */
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    cursor: pointer;
+}
+
+/* Common Textarea Styles */
+textarea {
+    width: 100%;
+    min-height: 200px;
+    padding: 8px;
+    background: #444;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: white;
+    font-family: monospace;
+    resize: vertical;
+}
+
+/* Common Separator Styles */
+.separator {
+    display: flex;
+    align-items: center;
+    text-align: center;
+    margin: 15px 0;
+    color: #888;
+}
+
+.separator::before,
+.separator::after {
+    content: '';
+    flex: 1;
+    border-bottom: 1px solid #555;
+}
+
+.separator span {
+    padding: 0 10px;
+    font-size: 14px;
+}
+
+/* Common Help Text Styles */
+.help-text {
+    color: #999;
+    font-size: 0.9em;
+    margin-left: 0.25rem;
+}
+
+/* Common Keyboard Shortcut Styles */
+kbd {
+    background: #444;
+    border: 1px solid #666;
+    border-radius: 3px;
+    padding: 2px 5px;
+    font-size: 12px;
+    font-family: monospace;
+} 

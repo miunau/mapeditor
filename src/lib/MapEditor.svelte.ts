@@ -49,6 +49,9 @@ export class ReactiveMapEditor {
     isPainting = $state(false);
     paintTile = $state<number | null>(null);
     hasModifiedDuringPaint = $state(false);
+    rectangleStartX = $state<number | null>(null);
+    rectangleStartY = $state<number | null>(null);
+    isDrawingRectangle = $state(false);
 
     // For brush preview
     hoverX = $state(-1);
@@ -361,6 +364,119 @@ export class ReactiveMapEditor {
                     this.tilemap.tileHeight
                 );
             });
+        } else if (this.isDrawingRectangle && this.rectangleStartX !== null && this.rectangleStartY !== null) {
+            // Draw rectangle preview
+            const startX = Math.min(this.rectangleStartX, this.hoverX);
+            const startY = Math.min(this.rectangleStartY, this.hoverY);
+            const endX = Math.max(this.rectangleStartX, this.hoverX);
+            const endY = Math.max(this.rectangleStartY, this.hoverY);
+            
+            const width = endX - startX + 1;
+            const height = endY - startY + 1;
+
+            if (this.isCustomBrushMode && this.selectedCustomBrush) {
+                // Preview custom brush pattern in rectangle
+                const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
+                const pattern = calculateBrushPattern(
+                    { x: startX, y: startY, width, height },
+                    { width: brushWidth, height: brushHeight },
+                    this.useWorldAlignedRepeat
+                );
+
+                this.ctx.globalAlpha = 0.5;
+                for (let ty = 0; ty < height; ty++) {
+                    for (let tx = 0; tx < width; tx++) {
+                        const worldX = startX + tx;
+                        const worldY = startY + ty;
+
+                        if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
+                            const { sourceX, sourceY } = pattern[ty][tx];
+                            const tileIndex = tiles[sourceY][sourceX];
+                            if (tileIndex !== -1) {
+                                const tile = this.tilemap.getTile(tileIndex);
+                                if (tile) {
+                                    const screenPos = mapToScreen(
+                                        worldX,
+                                        worldY,
+                                        0,
+                                        0,
+                                        1,
+                                        this.tilemap.tileWidth,
+                                        this.tilemap.tileHeight
+                                    );
+                                    this.ctx.drawImage(tile, screenPos.x, screenPos.y);
+                                }
+                            }
+                        }
+                    }
+                }
+                this.ctx.globalAlpha = 1.0;
+            } else {
+                // Regular rectangle preview
+                const startPos = mapToScreen(
+                    startX,
+                    startY,
+                    0,
+                    0,
+                    1,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight
+                );
+
+                // Draw semi-transparent fill
+                this.ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+                this.ctx.fillRect(
+                    startPos.x,
+                    startPos.y,
+                    width * this.tilemap.tileWidth,
+                    height * this.tilemap.tileHeight
+                );
+
+                // Draw preview of tiles
+                const tileIndex = this.paintTile === null ? -1 : this.paintTile;
+                if (tileIndex !== -1) {
+                    this.ctx.globalAlpha = 0.5;
+                    const tile = this.tilemap.getTile(tileIndex);
+                    if (tile) {
+                        for (let y = startY; y <= endY; y++) {
+                            for (let x = startX; x <= endX; x++) {
+                                if (isInMapBounds(x, y, this.getMapDimensions())) {
+                                    const tilePos = mapToScreen(
+                                        x,
+                                        y,
+                                        0,
+                                        0,
+                                        1,
+                                        this.tilemap.tileWidth,
+                                        this.tilemap.tileHeight
+                                    );
+                                    this.ctx.drawImage(tile, tilePos.x, tilePos.y);
+                                }
+                            }
+                        }
+                    }
+                    this.ctx.globalAlpha = 1.0;
+                }
+            }
+
+            // Draw border
+            const startPos = mapToScreen(
+                startX,
+                startY,
+                0,
+                0,
+                1,
+                this.tilemap.tileWidth,
+                this.tilemap.tileHeight
+            );
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            this.ctx.lineWidth = 2 / this.zoomLevel;
+            this.ctx.strokeRect(
+                startPos.x,
+                startPos.y,
+                width * this.tilemap.tileWidth,
+                height * this.tilemap.tileHeight
+            );
         } else if (this.isCustomBrushMode && this.selectedCustomBrush) {
             const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
             
@@ -829,6 +945,11 @@ export class ReactiveMapEditor {
                             this.hasModifiedDuringPaint = true;
                         }
                     }
+                } else if (toolFSM.context.currentTool === 'rectangle') {
+                    this.rectangleStartX = mapPos.x;
+                    this.rectangleStartY = mapPos.y;
+                    this.isDrawingRectangle = true;
+                    toolFSM.send('startRectangle');
                 } else {
                     this.applyBrush(mapPos.x, mapPos.y, e.button === 2);
                 }
@@ -879,8 +1000,8 @@ export class ReactiveMapEditor {
 
         // Handle painting
         if (this.isPainting) {
-            if (this.isFloodFillMode) {
-                // Skip flood fill during drag
+            if (this.isFloodFillMode || toolFSM.context.currentTool === 'rectangle') {
+                // Skip during flood fill and rectangle drawing
                 return;
             }
             
@@ -889,6 +1010,70 @@ export class ReactiveMapEditor {
     }
 
     handleMouseUp() {
+        // Handle rectangle drawing completion
+        if (this.isDrawingRectangle && 
+            this.rectangleStartX !== null && 
+            this.rectangleStartY !== null && 
+            this.hoverX >= 0 && 
+            this.hoverY >= 0) {
+            
+            const startX = Math.min(this.rectangleStartX, this.hoverX);
+            const startY = Math.min(this.rectangleStartY, this.hoverY);
+            const endX = Math.max(this.rectangleStartX, this.hoverX);
+            const endY = Math.max(this.rectangleStartY, this.hoverY);
+            
+            const width = endX - startX + 1;
+            const height = endY - startY + 1;
+
+            if (this.isCustomBrushMode && this.selectedCustomBrush) {
+                // Apply custom brush pattern to rectangle
+                const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
+                const pattern = calculateBrushPattern(
+                    { x: startX, y: startY, width, height },
+                    { width: brushWidth, height: brushHeight },
+                    this.useWorldAlignedRepeat
+                );
+
+                for (let ty = 0; ty < height; ty++) {
+                    for (let tx = 0; tx < width; tx++) {
+                        const worldX = startX + tx;
+                        const worldY = startY + ty;
+
+                        if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
+                            const { sourceX, sourceY } = pattern[ty][tx];
+                            const tileIndex = tiles[sourceY][sourceX];
+                            if (tileIndex !== -1) {
+                                if (this.mapData[this.currentLayer][worldY][worldX] !== tileIndex) {
+                                    this.mapData[this.currentLayer][worldY][worldX] = tileIndex;
+                                    this.hasModifiedDuringPaint = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fill rectangle with selected tile
+                for (let y = startY; y <= endY; y++) {
+                    for (let x = startX; x <= endX; x++) {
+                        if (isInMapBounds(x, y, this.getMapDimensions())) {
+                            const newTile = this.paintTile === -1 ? -1 : toolFSM.context.selectedTile;
+                            if (this.mapData[this.currentLayer][y][x] !== newTile) {
+                                this.mapData[this.currentLayer][y][x] = newTile;
+                                this.hasModifiedDuringPaint = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            this.isDrawingRectangle = false;
+            toolFSM.send('stopRectangle');
+        }
+
+        // Reset rectangle drawing state
+        this.rectangleStartX = null;
+        this.rectangleStartY = null;
+
         // If we modified anything during this paint operation, save the state
         if (this.hasModifiedDuringPaint && this.undoBuffer) {
             // Push the state that was captured at the start of painting
@@ -912,6 +1097,17 @@ export class ReactiveMapEditor {
         this.isPanning = false;
         this.isPainting = false;
         this.paintTile = null;
+    }
+
+    cancelRectangleDrawing() {
+        if (this.isDrawingRectangle) {
+            this.rectangleStartX = null;
+            this.rectangleStartY = null;
+            this.isDrawingRectangle = false;
+            this.isPainting = false;
+            this.paintTile = null;
+            toolFSM.send('stopRectangle');
+        }
     }
 
     // Brush application
@@ -1049,7 +1245,10 @@ export class ReactiveMapEditor {
                 this.centerMap();
                 break;
             case 'r':
-                this.centerMap();
+                if (!e.ctrlKey && !e.metaKey) {
+                    e.preventDefault();
+                    toolFSM.send('selectTool', 'rectangle');
+                }
                 break;
             case 'f':
                 e.preventDefault();
@@ -1106,6 +1305,10 @@ export class ReactiveMapEditor {
                         toolFSM.send('selectTile', selectedTile + 1);
                     }
                 }
+                break;
+            case 'escape':
+                e.preventDefault();
+                this.cancelRectangleDrawing();
                 break;
         }
     }

@@ -3,19 +3,20 @@ import type { CustomBrush } from '../types/map';
 import { editorStore } from './EditorStore.svelte';
 
 export type ToolContext = {
-    currentTool: 'brush' | 'fill';
+    currentTool: 'brush' | 'fill' | 'rectangle';
     brushSize: number;
     selectedTile: number;
     customBrush: CustomBrush | null;
     isWorldAlignedRepeat: boolean;
 }
 
-type ToolStateType = 'idle' | 'painting' | 'filling';
+type ToolStateType = 'idle' | 'painting' | 'filling' | 'drawingRectangle';
 
 export type ToolStates = {
     idle: FSMState<ToolContext, ToolStateType>;
     painting: FSMState<ToolContext, ToolStateType>;
     filling: FSMState<ToolContext, ToolStateType>;
+    drawingRectangle: FSMState<ToolContext, ToolStateType>;
 }
 
 const initialContext: ToolContext = {
@@ -31,7 +32,8 @@ const states: ToolStates = {
         on: {
             'startPaint': 'painting',
             'startFill': 'filling',
-            'selectTool': (context: FSMContext<ToolContext>, tool: 'brush' | 'fill') => {
+            'startRectangle': 'drawingRectangle',
+            'selectTool': (context: FSMContext<ToolContext>, tool: 'brush' | 'fill' | 'rectangle') => {
                 context.currentTool = tool;
                 return 'idle';
             },
@@ -75,6 +77,19 @@ const states: ToolStates = {
         },
         on: {
             'stopFill': 'idle'
+        }
+    },
+    drawingRectangle: {
+        enter: (context: FSMContext<ToolContext>) => {
+            context.currentTool = 'rectangle';
+            return context;
+        },
+        on: {
+            'stopRectangle': 'idle',
+            'setBrushSize': (context: FSMContext<ToolContext>, size: number) => {
+                context.brushSize = Math.max(1, size);
+                return 'drawingRectangle';
+            }
         }
     }
 };

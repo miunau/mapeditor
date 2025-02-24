@@ -54,7 +54,7 @@ export const editorStore = {
     get customBrush() { return editor?.selectedCustomBrush || null; },
     get isWorldAlignedRepeat() { return editor?.useWorldAlignedRepeat || false; },
     get isPainting() { return toolFSM.state === 'painting'; },
-    get isErasing() { return toolFSM.state === 'erasing'; },
+    get isDrawingRectangle() { return toolFSM.state === 'drawingRectangle'; },
     get isFilling() { return toolFSM.state === 'filling'; },
 
     // Layer state
@@ -94,14 +94,20 @@ export const editorStore = {
             editor.showGrid = show;
         }
     },
-    selectTool(tool: string) {
+    selectTool(tool: 'brush' | 'fill' | 'rectangle') {
+        if (!editor) return;
+
+        // Reset any active tool states
+        editor.isFloodFillMode = false;
+        editor.isDrawingRectangle = false;
+        editor.cancelRectangleDrawing();
+
+        // Set the new tool
         toolFSM.send('selectTool', tool);
-        if (editor) {
-            if (tool === 'fill') {
-                editor.isFloodFillMode = true;
-            } else {
-                editor.isFloodFillMode = false;
-            }
+
+        // Update editor state based on tool
+        if (tool === 'fill') {
+            editor.isFloodFillMode = true;
         }
     },
     setBrushSize(size: number) {

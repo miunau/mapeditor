@@ -2,6 +2,18 @@
     import { editorStore } from '../lib/state/EditorStore.svelte';
     import { calculateZoomTransform, findClosestZoomLevel } from '../lib/utils/zoom';
     import type { ZoomLevel } from '../lib/utils/zoom';
+  import IconAdjustment from './icons/IconAdjustment.svelte';
+  import IconBrush from './icons/IconBrush.svelte';
+  import IconExport from './icons/IconExport.svelte';
+  import IconGrid from './icons/IconGrid.svelte';
+  import IconImport from './icons/IconImport.svelte';
+  import IconInfo from './icons/IconInfo.svelte';
+  import IconLayer from './icons/IconLayer.svelte';
+  import IconNewFile from './icons/IconNewFile.svelte';
+  import IconPaintBucket from './icons/IconPaintBucket.svelte';
+  import IconResize from './icons/IconResize.svelte';
+  import IconZoomIn from './icons/IconZoomIn.svelte';
+  import IconZoomOut from './icons/IconZoomOut.svelte';
 
     function resetZoom() {
         const rect = editorStore.canvas?.getBoundingClientRect();
@@ -35,19 +47,27 @@
 
 {#if editorStore.editor}
 <div class="controls">
-    <button onclick={() => editorStore.setShowNewMapDialog(true)} title="Create new map">📄</button>
-    <button onclick={() => editorStore.setShowResizeDialog(true)} title="Resize current map">📐</button>
-    <button onclick={() => editorStore.setShowTilemapDialog(true)} title="Change tilemap settings">⚙️</button>
+    <button onclick={() => editorStore.setShowNewMapDialog(true)} title="Create new map">
+        <IconNewFile />
+    </button>
+    <button onclick={() => editorStore.setShowResizeDialog(true)} title="Resize current map">
+        <IconResize />
+    </button>
+    <button onclick={() => editorStore.setShowTilemapDialog(true)} title="Change tilemap settings">
+        <IconAdjustment />
+    </button>
     <button 
         onclick={() => editorStore.editor?.toggleGrid()}
         class:active={editorStore.showGrid}
         title="Toggle grid (V)"
         class="tool-button"
     >
-        ⊞
+        <IconGrid />
     </button>
     <div class="layer-indicator">
-        <span>Layer: </span>
+        <span>
+            <IconLayer />
+        </span>
         <div class="layer-buttons">
             <button 
                 class:active={editorStore.currentLayer === -1}
@@ -83,7 +103,7 @@
                 title="Brush tool (B)"
                 class="tool-button"
             >
-                🖌️
+                <IconBrush/>
             </button>
             <button 
                 class:active={editorStore.currentTool === 'fill'}
@@ -91,7 +111,15 @@
                 title="Flood fill tool (G)"
                 class="tool-button"
             >
-                🪣
+                <IconPaintBucket />
+            </button>
+            <button 
+                class:active={editorStore.currentTool === 'rectangle'}
+                onclick={() => editorStore.selectTool('rectangle')}
+                title="Rectangle tool (R)"
+                class="tool-button"
+            >
+                □
             </button>
         </div>
         <span>📏 </span>
@@ -106,11 +134,12 @@
         >+</button>
     </div>
     <div class="zoom-controls">
-        <span>🔍 </span>
         <button 
             onclick={() => handleToolbarZoom('down')}
             title="Zoom out (-)"
-        >-</button>
+        >
+            <IconZoomOut />
+        </button>
         <button 
             onclick={resetZoom}
             title="Reset zoom (Ctrl/Cmd + 0)"
@@ -119,12 +148,18 @@
         <button 
             onclick={() => handleToolbarZoom('up')}
             title="Zoom in (+)"
-        >+</button>
+        >
+            <IconZoomIn />
+        </button>
     </div>
-    <button onclick={() => editorStore.setShowExportDialog(true)} title="Export map (Ctrl/Cmd + E)">📤</button>
-    <button onclick={() => editorStore.setShowImportDialog(true)} title="Import map (Ctrl/Cmd + I)">📥</button>
+    <button onclick={() => editorStore.setShowExportDialog(true)} title="Export map (Ctrl/Cmd + E)">
+        <IconExport />
+    </button>
+    <button onclick={() => editorStore.setShowImportDialog(true)} title="Import map (Ctrl/Cmd + I)">
+        <IconImport />
+    </button>
     <button onclick={() => editorStore.setShowShortcuts(!editorStore.showShortcuts)} title="Ctrl/Cmd + H or ?">
-        {editorStore.showShortcuts ? '❌' : '❓'}
+        <IconInfo />
     </button>
 </div>
 {/if}
