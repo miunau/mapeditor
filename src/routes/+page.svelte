@@ -40,7 +40,6 @@
         if (!editor) return;
         
         await editor.init();
-        editorLoop();
 
         // Set up event listeners
         editorCanvas!.addEventListener('mousedown', handleMouseDown);
@@ -56,12 +55,6 @@
         // Initial resize and center
         handleResize();
         editor.centerMap();
-    }
-
-    function editorLoop() {
-        if (!editor) return;
-        editor.update();
-        animationFrame = requestAnimationFrame(editorLoop);
     }
 
     function handleMouseDown(e: MouseEvent) {
@@ -154,6 +147,7 @@
     <div class="status-bar">
         <p class="status-bar-field">Selected tile: {editorStore.selectedTile}</p>
         <p class="status-bar-field">Brush size: {editorStore.brushSize}</p>
+        <p class="status-bar-field">FPS: {editor?.fps ?? 0}</p>
     </div>
 </div>
 

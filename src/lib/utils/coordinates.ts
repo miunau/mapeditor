@@ -65,7 +65,9 @@ export function isInMapBounds(
 export function getBrushArea(
     centerX: number,
     centerY: number,
-    brushSize: number
+    brushSize: number,
+    brush: { width: number, height: number } | null = null,
+    isCustomBrush: boolean = false
 ): Rect {
     const brushOffsetX = Math.floor((brushSize - 1) / 2);
     const brushOffsetY = Math.floor((brushSize - 1) / 2);
@@ -73,8 +75,27 @@ export function getBrushArea(
     return {
         x: centerX - brushOffsetX,
         y: centerY - brushOffsetY,
-        width: brushSize,
-        height: brushSize
+        width: isCustomBrush ? brushSize : (brush?.width ?? 1) * brushSize,
+        height: isCustomBrush ? brushSize : (brush?.height ?? 1) * brushSize
+    };
+}
+
+// Calculate target area for brush application
+export function calculateBrushTargetArea(
+    centerX: number,
+    centerY: number,
+    brushSize: number,
+    brush: { width: number, height: number } | null,
+    isCustomBrush: boolean = false
+): Rect {
+    const brushOffsetX = Math.floor((brushSize - 1) / 2);
+    const brushOffsetY = Math.floor((brushSize - 1) / 2);
+
+    return {
+        x: centerX - brushOffsetX,
+        y: centerY - brushOffsetY,
+        width: isCustomBrush ? brushSize : (brush?.width ?? 1) * brushSize,
+        height: isCustomBrush ? brushSize : (brush?.height ?? 1) * brushSize
     };
 }
 

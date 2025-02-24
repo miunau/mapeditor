@@ -54,7 +54,7 @@ export const editorStore = {
     get currentTool() { return toolFSM.context.currentTool; },
     get brushSize() { return toolFSM.context.brushSize; },
     get selectedTile() { return toolFSM.context.selectedTile; },
-    get customBrush() { return editor?.selectedCustomBrush || null; },
+    get customBrush() { return editor?.brushManager?.getSelectedBrush() || null; },
     get isWorldAlignedRepeat() { return editor?.useWorldAlignedRepeat || false; },
     get isPainting() { return toolFSM.state === 'painting'; },
     get isDrawingRectangle() { return toolFSM.state === 'drawingRectangle'; },

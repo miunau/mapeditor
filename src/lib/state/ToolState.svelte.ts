@@ -22,7 +22,7 @@ export type ToolStates = {
 const initialContext: ToolContext = {
     currentTool: 'brush',
     brushSize: 1,
-    selectedTile: 0,
+    selectedTile: -1,
     customBrush: null,
     isWorldAlignedRepeat: false
 };
