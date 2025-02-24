@@ -13,7 +13,13 @@ import {
     drawRectanglePreview,
     drawSingleTilePreview
 } from './utils/brush';
-import { findClosestZoomLevel, calculateZoomTransform, type ZoomLevel } from './utils/zoom';
+import { 
+    findClosestZoomLevel, 
+    calculateZoomTransform, 
+    type ZoomLevel,
+    type SnapZoomLevel,
+    ZOOM_LEVELS 
+} from './utils/zoom';
 import { createMapMetadata, unpackMapData } from './utils/serialization';
 import type { ResizeAlignment } from './types/map';
 
@@ -36,8 +42,8 @@ export class ReactiveMapEditor {
 
     // Constants
     readonly MAX_LAYERS = 10;
-    readonly minZoom = 0.25;
-    readonly maxZoom = 4;
+    readonly minZoom = ZOOM_LEVELS[0];
+    readonly maxZoom = ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
 
     // For panning
     isPanning = $state(false);
@@ -188,21 +194,18 @@ export class ReactiveMapEditor {
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
 
-        // Update zoom level
-        const zoomDelta = -e.deltaY * 0.001;
-        let newZoom = this.zoomLevel * (1 + zoomDelta);
-        
-        // Clamp to min/max zoom
-        newZoom = Math.max(this.minZoom, Math.min(this.maxZoom, newZoom));
-        
+        // Find the next zoom level based on scroll direction
+        const direction = e.deltaY < 0 ? 'up' : 'down';
+        const newZoom = findClosestZoomLevel(this.zoomLevel, direction, 'fine');
+
         // Only proceed if zoom actually changed
         if (newZoom !== this.zoomLevel) {
-            this.setZoom(newZoom as ZoomLevel, { x: mouseX, y: mouseY });
+            this.setZoom(newZoom, { x: mouseX, y: mouseY });
         }
     }
 
     // Set zoom level with focus point
-    setZoom(newZoom: ZoomLevel, focusPoint: Point) {
+    setZoom(newZoom: SnapZoomLevel, focusPoint: Point) {
         const transform = calculateZoomTransform(
             newZoom,
             this.zoomLevel,
@@ -210,7 +213,7 @@ export class ReactiveMapEditor {
             { x: this.offsetX, y: this.offsetY }
         );
         
-        this.zoomLevel = transform.zoom;
+        this.zoomLevel = transform.zoom as ZoomLevel;
         this.offsetX = transform.offset.x;
         this.offsetY = transform.offset.y;
     }
@@ -265,7 +268,7 @@ export class ReactiveMapEditor {
 
         // Apply zoom and offset transformation
         this.ctx.save();
-        this.ctx.translate(this.offsetX, this.offsetY);
+        this.ctx.translate(Math.round(this.offsetX), Math.round(this.offsetY));
         this.ctx.scale(this.zoomLevel, this.zoomLevel);
 
         // Draw each layer from bottom to top
@@ -285,7 +288,8 @@ export class ReactiveMapEditor {
                     const tile = this.tilemap.getTile(tileIndex);
                     if (tile) {
                         const screenPos = mapToScreen(x, y, 0, 0, 1, this.tilemap.tileWidth, this.tilemap.tileHeight);
-                        this.ctx.drawImage(tile, screenPos.x, screenPos.y);
+                        // Round the position to prevent sub-pixel rendering
+                        this.ctx.drawImage(tile, Math.round(screenPos.x), Math.round(screenPos.y));
                     }
                 }
             }
@@ -350,6 +354,26 @@ export class ReactiveMapEditor {
             const targetValue = this.mapData[this.currentLayer][this.hoverY][this.hoverX];
             const previewLayer = this.mapData[this.currentLayer].map(row => [...row]);
             const filledPoints = floodFill(previewLayer, this.hoverX, this.hoverY, targetValue, -2);
+            
+            if (this.isCustomBrushMode && this.selectedCustomBrush) {
+                // Preview custom brush pattern on filled points using 9-slice scaling
+                drawCustomBrushPreview(
+                    this.ctx,
+                    this.selectedCustomBrush,
+                    { x: this.hoverX, y: this.hoverY, width: 1, height: 1 }, // This will be recalculated based on filled points
+                    (index: number) => this.tilemap.getTile(index),
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.zoomLevel,
+                    mapToScreen,
+                    this.useWorldAlignedRepeat,
+                    isInMapBounds,
+                    this.getMapDimensions(),
+                    filledPoints
+                );
+            }
+            
+            // Draw highlight around filled area
             drawFloodFillPreview(
                 this.ctx,
                 filledPoints,
@@ -788,9 +812,13 @@ export class ReactiveMapEditor {
 
     // Handle window resize
     resize() {
-        this.canvas.width = window.innerWidth;
-        this.canvas.height = window.innerHeight;
-        this.ctx.imageSmoothingEnabled = false;
+        const container = this.canvas.parentElement;
+        if (container) {
+            const bounds = container.getBoundingClientRect();
+            this.canvas.width = bounds.width;
+            this.canvas.height = bounds.height;
+            this.ctx.imageSmoothingEnabled = false;
+        }
     }
 
     // Mouse event handlers
@@ -845,19 +873,72 @@ export class ReactiveMapEditor {
                 this.isPainting = true;
                 this.paintTile = e.button === 0 ? toolFSM.context.selectedTile : -1;
 
-                if (this.isFloodFillMode) {
+                if (this.isFloodFillMode && e.button === 0) {
                     // Get the target value (the tile we're replacing)
                     const targetValue = this.mapData[this.currentLayer][mapPos.y][mapPos.x];
                     
-                    // Only flood fill if we're changing to a different tile
-                    if (targetValue !== this.paintTile) {
-                        // Perform flood fill
+                    if (this.isCustomBrushMode && this.selectedCustomBrush) {
+                        // Create a copy of the current layer for undo
+                        const layerCopy = this.mapData[this.currentLayer].map(row => [...row]);
+                        
+                        // Perform flood fill with a temporary value
                         const filledPoints = floodFill(
                             this.mapData[this.currentLayer],
                             mapPos.x,
                             mapPos.y,
                             targetValue,
-                            this.paintTile
+                            -2  // Use a temporary value that won't conflict with tile indices
+                        );
+                        
+                        if (filledPoints.length > 0) {
+                            const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
+                            
+                            // Find the bounding box of filled points
+                            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                            for (const point of filledPoints) {
+                                minX = Math.min(minX, point.x);
+                                minY = Math.min(minY, point.y);
+                                maxX = Math.max(maxX, point.x);
+                                maxY = Math.max(maxY, point.y);
+                            }
+
+                            // Calculate the target area for pattern generation
+                            const targetArea = {
+                                x: minX,
+                                y: minY,
+                                width: maxX - minX + 1,
+                                height: maxY - minY + 1
+                            };
+
+                            // Calculate brush pattern for the entire area
+                            const pattern = calculateBrushPattern(
+                                targetArea,
+                                { width: brushWidth, height: brushHeight },
+                                this.useWorldAlignedRepeat
+                            );
+
+                            // Apply pattern only to filled points
+                            for (const point of filledPoints) {
+                                // Calculate relative position within the pattern
+                                const relX = point.x - targetArea.x;
+                                const relY = point.y - targetArea.y;
+                                const { sourceX, sourceY } = pattern[relY][relX];
+                                const tileIndex = tiles[sourceY][sourceX];
+                                if (tileIndex !== -1) {
+                                    this.mapData[this.currentLayer][point.y][point.x] = tileIndex;
+                                }
+                            }
+                            this.hasModifiedDuringPaint = true;
+                        }
+                    } else {
+                        // Regular flood fill with a single tile
+                        const fillValue = this.paintTile || 0;  // Use 0 instead of -1 for the first tile
+                        const filledPoints = floodFill(
+                            this.mapData[this.currentLayer],
+                            mapPos.x,
+                            mapPos.y,
+                            targetValue,
+                            fillValue
                         );
                         
                         if (filledPoints.length > 0) {

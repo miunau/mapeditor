@@ -1,6 +1,8 @@
 <script lang="ts">
     import { editorStore } from '../../lib/state/EditorStore.svelte';
+  import Dialog from './Dialog.svelte';
 
+    let fileInput: HTMLInputElement;
     let settings = $state({
         url: '',
         tileWidth: 16,
@@ -14,6 +16,14 @@
         }
     });
 
+    function closeDialog() {
+        // Reset to current settings when closing without applying
+        if (editorStore.editor) {
+            settings = editorStore.editor.getTilemapSettings();
+        }
+        editorStore.setShowTilemapDialog(false);
+    }
+
     async function handleFileSelect(e: Event) {
         const input = e.target as HTMLInputElement;
         if (input.files && input.files[0]) {
@@ -23,6 +33,18 @@
             settings.url = url;
         }
     }
+
+    // Cleanup blob URL when dialog is closed
+    $effect(() => {
+        if (!editorStore.showTilemapDialog) {
+            if (settings.url.startsWith('blob:')) {
+                URL.revokeObjectURL(settings.url);
+            }
+            if (fileInput) {
+                fileInput.value = '';
+            }
+        }
+    });
 
     async function updateSettings() {
         if (!editorStore.editor) return;
@@ -42,19 +64,22 @@
     }
 </script>
 
-<div class="dialog" class:show={editorStore.showTilemapDialog}>
-    <h3>Tilemap Settings</h3>
-    <div class="dialog-content">
-        <div class="file-input">
-            <label>
-                Tilemap Image:
-                <input 
-                    type="file" 
-                    accept="image/*"
-                    onchange={handleFileSelect}
-                />
-            </label>
+<Dialog title="Tilemap Settings" onClose={closeDialog} show={editorStore.showTilemapDialog}>
+    {#if settings.url}
+        <div class="image-preview">
+            <img src={settings.url} alt="Tilemap preview" />
         </div>
+    {/if}
+    <div class="dialog-content">
+        <label>
+            Tilemap Image:
+            <input 
+                type="file" 
+                accept="image/*"
+                onchange={handleFileSelect}
+                bind:this={fileInput}
+            />
+        </label>
         <label>
             Tile Width:
             <input 
@@ -84,90 +109,23 @@
         </label>
         <div class="dialog-buttons">
             <button onclick={updateSettings}>Apply</button>
-            <button onclick={() => editorStore.setShowTilemapDialog(false)}>Cancel</button>
+            <button onclick={closeDialog}>Cancel</button>
         </div>
     </div>
-</div>
+</Dialog>
 
 <style>
-    .dialog {
-        display: none;
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.9);
-        padding: 20px;
-        border-radius: 8px;
-        border: 1px solid #555;
-        color: white;
-        z-index: 1000;
-    }
-
-    .dialog.show {
-        display: block;
-    }
-
-    h3 {
-        margin: 0 0 15px 0;
-        font-size: 18px;
-    }
-
     .dialog-content {
         display: flex;
         flex-direction: column;
-        gap: 15px;
+        gap: 11px;
+        margin-top: 16px;
     }
 
     label {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
         gap: 10px;
-    }
-
-    input {
-        width: 80px;
-        padding: 5px;
-        background: #444;
-        border: 1px solid #555;
-        border-radius: 4px;
-        color: white;
-        font-size: 14px;
-    }
-
-    .file-input {
-        margin-bottom: 10px;
-    }
-
-    .file-input label {
-        display: flex;
-        flex-direction: column;
-        gap: 5px;
-    }
-
-    .file-input input[type="file"] {
-        background: #444;
-        border: 1px solid #555;
-        border-radius: 4px;
-        color: white;
-        padding: 5px;
-        cursor: pointer;
-        width: 100%;
-    }
-
-    .file-input input[type="file"]::-webkit-file-upload-button {
-        background: #666;
-        border: none;
-        border-radius: 4px;
-        color: white;
-        padding: 8px 16px;
-        margin-right: 10px;
-        cursor: pointer;
-    }
-
-    .file-input input[type="file"]::-webkit-file-upload-button:hover {
-        background: #777;
     }
 
     .dialog-buttons {
@@ -177,17 +135,17 @@
         margin-top: 10px;
     }
 
-    button {
-        min-width: 80px;
-        padding: 8px 16px;
-        background: #555;
-        border: 1px solid #666;
-        border-radius: 4px;
-        color: white;
-        cursor: pointer;
+    .image-preview {
+        margin-top: 10px;
+        align-items: center;
+        justify-content: center;
+        display: flex;
     }
 
-    button:hover {
-        background: #666;
+    .image-preview img {
+        max-width: 100%;
+        max-height: 200px;
+        object-fit: contain;
+        display: block;
     }
 </style> 

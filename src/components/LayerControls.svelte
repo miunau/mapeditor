@@ -127,7 +127,6 @@
         color: white;
         padding: 4px 8px;
         cursor: pointer;
-        font-size: 12px;
     }
 
     .layer-header button:hover {
@@ -193,7 +192,6 @@
         border-radius: 4px;
         color: white;
         padding: 4px 8px;
-        font-size: 12px;
     }
 
     .layer-name:hover {

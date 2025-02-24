@@ -94,7 +94,6 @@
         border: 1px solid #666;
         border-radius: 3px;
         padding: 2px 5px;
-        font-size: 12px;
         font-family: monospace;
     }
 

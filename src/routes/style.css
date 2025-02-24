@@ -1,3 +1,30 @@
+@font-face {
+    font-family: 'W95FA';
+    src: url('/W95FARegular.woff2') format('woff2'),
+        url('/W95FARegular.woff') format('woff');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'MS Sans Serif';
+    src: url('/ms_sans_serif.woff2') format('woff2'),
+         url('/MS-Sans-Serif.woff') format('woff');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'MS Sans Serif';
+    src: url('/ms_sans_serif_bold.woff2') format('woff2'),
+         url('/MS-Sans-Serif-Bold.woff') format('woff');
+    font-weight: bold;
+    font-style: normal;
+    font-display: swap;
+}
+
 html, body {
     margin: 0;
     padding: 0;
@@ -6,13 +33,39 @@ html, body {
 }
 
 body {
-    background-color: #000;
-    font-family: 'Helvetica', 'Arial', sans-serif;
+    font-family: 'MS Sans Serif', 'Helvetica', 'Arial', sans-serif !important;
+    font-size: 12px;
+    -webkit-font-smoothing: none;
+    -moz-osx-font-smoothing: grayscale;
+    font-smooth: never;
+    min-height: 0;
+    height: 100%;
+}
+
+body * {
+    box-sizing: border-box;
 }
     
-input, button, select {
-    font-family: 'Helvetica', 'Arial', sans-serif;
+input, button, select, p, h1, h2, h3, h4, h5, h6, label, input[type=file]::file-selector-button {
+    font-family: 'MS Sans Serif', 'Helvetica', 'Arial', sans-serif !important;
+}
+
+label {
+    user-select: none;
 }
 
 button {
+    cursor: pointer;
+}
+
+button.active {
+    box-shadow: inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px grey;
+    text-shadow: 1px 1px #222;
+}
+
+button.active svg,
+button:active svg {
+    position: relative;
+    top: 1px;
+    left: 1px;
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
     import "./style.css";
+    import "./98.css";
     import { ReactiveMapEditor } from "$lib/MapEditor.svelte";
     import { base } from "$app/paths";
     import { drawTile } from "$lib/drawTile";
@@ -14,6 +15,7 @@
     import ShortcutsDialog from "../components/dialogs/ShortcutsDialog.svelte";
     import CustomBrushDialog from "../components/dialogs/CustomBrushDialog.svelte";
     import { editorStore } from "$lib/state/EditorStore.svelte";
+  import MainMenu from "../components/MainMenu.svelte";
 
     let editorCanvas: HTMLCanvasElement | undefined = $state();
     let editor: ReactiveMapEditor | undefined = $state();
@@ -127,41 +129,60 @@
     <title>miunau's map editor</title>
 </svelte:head>
 
-<main>
-    {#if editor}
-        <Toolbar />
-        <LayerControls />
-        <NewMapDialog />
-        <ResizeDialog />
-        <TilemapSettingsDialog />
-        <ImportDialog />
-        <ExportDialog />
-        <ShortcutsDialog />
-        <CustomBrushDialog />
-    {/if}
-    <canvas id="editor-canvas" bind:this={editorCanvas}></canvas>
-</main>
+<div class="window">
+    <div class="title-bar">
+        <div class="title-bar-text">miunau's map editor</div>
+    </div>
+    <div class="main-menu"> 
+        <MainMenu />
+    </div>
+    <div class="window-body">
+        {#if editor}
+            <Toolbar />
+            <LayerControls />
+            <NewMapDialog />
+            <ResizeDialog />
+            <TilemapSettingsDialog />
+            <ImportDialog />
+            <ExportDialog />
+            <ShortcutsDialog />
+            <CustomBrushDialog />
+        {/if}
+        <div class="editor-container">
+            <canvas id="editor-canvas" bind:this={editorCanvas}></canvas>
+        </div>
+    </div>
+    <div class="status-bar">
+        <p class="status-bar-field">Press F1 for help</p>
+        <p class="status-bar-field">Slide 1</p>
+        <p class="status-bar-field">CPU Usage: 14%</p>
+    </div>
+</div>
 
 <style>
-    main {
-        width: 100%;
+    .window {
         height: 100%;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto auto 1fr auto;
+    }
+    .window-body {
         display: flex;
         flex-direction: column;
+        min-height: 0;
     }
-
-    canvas {
+    .status-bar {
+        height: 100%;
+        min-height: 0;
+    }
+    .editor-container {
         flex: 1;
         width: 100%;
         height: 100%;
     }
-
-    :global(body) {
-        margin: 0;
-        padding: 0;
-        overflow: hidden;
-        height: 100vh;
-        background: #2a2a2a;
-        color: white;
+    canvas {
+        flex: 1;
+        width: 100%;
+        height: 100%;
     }
 </style>

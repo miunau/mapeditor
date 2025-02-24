@@ -212,8 +212,27 @@ export function drawCustomBrushPreview(
     mapToScreen: (x: number, y: number, offsetX: number, offsetY: number, zoom: number, tileW: number, tileH: number) => Point,
     useWorldAlignedRepeat: boolean,
     isInMapBounds: (x: number, y: number, dimensions: { width: number, height: number }) => boolean,
-    mapDimensions: { width: number, height: number }
+    mapDimensions: { width: number, height: number },
+    filledPoints?: { x: number, y: number }[]
 ) {
+    // If we have filled points, calculate the bounding box
+    if (filledPoints && filledPoints.length > 0) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const point of filledPoints) {
+            minX = Math.min(minX, point.x);
+            minY = Math.min(minY, point.y);
+            maxX = Math.max(maxX, point.x);
+            maxY = Math.max(maxY, point.y);
+        }
+
+        targetArea = {
+            x: minX,
+            y: minY,
+            width: maxX - minX + 1,
+            height: maxY - minY + 1
+        };
+    }
+
     const pattern = calculateBrushPattern(
         targetArea,
         { width: brush.width, height: brush.height },
@@ -222,20 +241,20 @@ export function drawCustomBrushPreview(
 
     ctx.globalAlpha = 0.5;
 
-    for (let ty = 0; ty < targetArea.height; ty++) {
-        for (let tx = 0; tx < targetArea.width; tx++) {
-            const worldX = targetArea.x + tx;
-            const worldY = targetArea.y + ty;
-
-            if (isInMapBounds(worldX, worldY, mapDimensions)) {
-                const { sourceX, sourceY } = pattern[ty][tx];
+    // If we have filled points, only draw at those positions
+    if (filledPoints) {
+        for (const point of filledPoints) {
+            if (isInMapBounds(point.x, point.y, mapDimensions)) {
+                const relX = point.x - targetArea.x;
+                const relY = point.y - targetArea.y;
+                const { sourceX, sourceY } = pattern[relY][relX];
                 const tileIndex = brush.tiles[sourceY][sourceX];
                 if (tileIndex !== -1) {
                     const tile = getTile(tileIndex);
                     if (tile) {
                         const screenPos = mapToScreen(
-                            worldX,
-                            worldY,
+                            point.x,
+                            point.y,
                             0,
                             0,
                             1,
@@ -243,6 +262,34 @@ export function drawCustomBrushPreview(
                             tileHeight
                         );
                         ctx.drawImage(tile, screenPos.x, screenPos.y);
+                    }
+                }
+            }
+        }
+    } else {
+        // Regular brush preview - draw all tiles in the target area
+        for (let ty = 0; ty < targetArea.height; ty++) {
+            for (let tx = 0; tx < targetArea.width; tx++) {
+                const worldX = targetArea.x + tx;
+                const worldY = targetArea.y + ty;
+
+                if (isInMapBounds(worldX, worldY, mapDimensions)) {
+                    const { sourceX, sourceY } = pattern[ty][tx];
+                    const tileIndex = brush.tiles[sourceY][sourceX];
+                    if (tileIndex !== -1) {
+                        const tile = getTile(tileIndex);
+                        if (tile) {
+                            const screenPos = mapToScreen(
+                                worldX,
+                                worldY,
+                                0,
+                                0,
+                                1,
+                                tileWidth,
+                                tileHeight
+                            );
+                            ctx.drawImage(tile, screenPos.x, screenPos.y);
+                        }
                     }
                 }
             }

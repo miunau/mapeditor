@@ -7,12 +7,28 @@
     let height = $state(3);
     let tiles: number[][] = $state([]);
     let selectedTile = $state(-1);
+    let dragSource: { x: number, y: number } | null = $state(null);
+    let dragTarget: { x: number, y: number } | null = $state(null);
+    let isDragCopy = $state(false);
+    let isShiftPressed = $state(false);
+    let isDragging = $state(false);
+    let previewTarget: { x: number, y: number } | null = $state(null);
+    let draggedPaletteTile = $state<number | null>(null);
 
-    // For WASD navigation
+    // Track shift key state
     function handleKeyDown(e: KeyboardEvent) {
         if (!editorStore.showCustomBrushDialog) return;
         
         if (e.target instanceof HTMLInputElement) return;
+
+        // Track shift key state
+        if (e.key === 'Shift') {
+            e.preventDefault(); // Prevent shift from focusing buttons
+            isShiftPressed = true;
+            if (isDragging) {
+                isDragCopy = true;
+            }
+        }
 
         const tilemapWidth = editorStore.editor?.tilemap.width || 0;
         const tilemapHeight = editorStore.editor?.tilemap.height || 0;
@@ -50,6 +66,16 @@
         }
     }
 
+    function handleKeyUp(e: KeyboardEvent) {
+        // Track shift key state
+        if (e.key === 'Shift') {
+            isShiftPressed = false;
+            if (isDragging) {
+                isDragCopy = false;
+            }
+        }
+    }
+
     $effect(() => {
         if (editorStore.showCustomBrushDialog && editorStore.customBrushDialogId) {
             const brush = editorStore.customBrush;
@@ -69,10 +95,12 @@
 
     $effect(() => {
         if (editorStore.showCustomBrushDialog) {
-            // Add event listener for WASD navigation
+            // Add event listeners for keyboard events
             window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('keyup', handleKeyUp);
             return () => {
                 window.removeEventListener('keydown', handleKeyDown);
+                window.removeEventListener('keyup', handleKeyUp);
             };
         }
     });
@@ -81,6 +109,49 @@
         if (x >= 0 && x < width && y >= 0 && y < height) {
             tiles[y][x] = selectedTile;
         }
+    }
+
+    function handleMouseDown(x: number, y: number, e: MouseEvent) {
+        if (x >= 0 && x < width && y >= 0 && y < height && tiles[y][x] !== -1) {
+            isDragging = true;
+            dragSource = { x, y };
+            isDragCopy = isShiftPressed || e.shiftKey;
+        }
+    }
+
+    function handleMouseUp() {
+        if (dragSource && dragTarget) {
+            if (isDragCopy) {
+                // Copy the tile to the target location
+                tiles[dragTarget.y][dragTarget.x] = tiles[dragSource.y][dragSource.x];
+            } else {
+                // Swap tiles between source and target
+                const temp = tiles[dragSource.y][dragSource.x];
+                tiles[dragSource.y][dragSource.x] = tiles[dragTarget.y][dragTarget.x];
+                tiles[dragTarget.y][dragTarget.x] = temp;
+            }
+        }
+        isDragging = false;
+        dragSource = null;
+        dragTarget = null;
+        isDragCopy = false;
+    }
+
+    function handleMouseMove(x: number, y: number, e: MouseEvent) {
+        if (isDragging && x >= 0 && x < width && y >= 0 && y < height) {
+            dragTarget = { x, y };
+            previewTarget = { x, y };
+            isDragCopy = isShiftPressed || e.shiftKey;
+        } else if (x >= 0 && x < width && y >= 0 && y < height) {
+            previewTarget = { x, y };
+        }
+    }
+
+    function handleMouseLeave() {
+        if (!isDragging) {
+            dragTarget = null;
+        }
+        previewTarget = null;
     }
 
     function handleSave() {
@@ -100,14 +171,35 @@
     }
 
     function updateBrushDimensions() {
+        // Store old dimensions
+        const oldWidth = width;
+        const oldHeight = height;
+
         // Ensure dimensions are within reasonable limits
         width = Math.max(1, Math.min(9, width));
         height = Math.max(1, Math.min(9, height));
 
-        // Create new tiles array with new dimensions, preserving existing tiles
+        // If tiles array is empty or undefined, initialize it with -1
+        if (!tiles || !tiles.length) {
+            tiles = Array(oldHeight).fill(null)
+                .map(() => Array(oldWidth).fill(-1));
+        }
+
+        // Create new tiles array with new dimensions
         const newTiles = Array(height).fill(null)
             .map((_, y) => Array(width).fill(null)
-                .map((_, x) => tiles[y]?.[x] ?? -1));
+                .map((_, x) => {
+                    // If within old bounds, keep existing tile
+                    if (y < oldHeight && x < oldWidth && tiles[y] && typeof tiles[y][x] !== 'undefined') {
+                        return tiles[y][x];
+                    }
+                    
+                    // For new cells, copy from nearest edge
+                    const sourceY = Math.min(y, oldHeight - 1);
+                    const sourceX = Math.min(x, oldWidth - 1);
+                    return tiles[sourceY]?.[sourceX] ?? -1;
+                }));
+        
         tiles = newTiles;
     }
 </script>
@@ -157,6 +249,7 @@
                         class="tile-cell eraser"
                         class:selected={selectedTile === -1}
                         onclick={() => selectedTile = -1}
+                        tabindex="-1"
                     >
                         ❌
                     </button>
@@ -167,6 +260,15 @@
                                     class="tile-cell"
                                     class:selected={selectedTile === i}
                                     onclick={() => selectedTile = i}
+                                    draggable="true"
+                                    ondragstart={(e) => {
+                                        e.dataTransfer?.setData('text/plain', i.toString());
+                                        draggedPaletteTile = i;
+                                    }}
+                                    ondragend={() => {
+                                        draggedPaletteTile = null;
+                                    }}
+                                    tabindex="-1"
                                 >
                                     <canvas 
                                         width={editorStore.editor.tilemap.tileWidth}
@@ -189,7 +291,34 @@
                             <button 
                                 class="tile-cell"
                                 class:empty={tile === -1}
+                                class:dragging={dragSource?.x === x && dragSource?.y === y}
+                                class:drag-target={(dragTarget?.x === x && dragTarget?.y === y) || (!isDragging && previewTarget?.x === x && previewTarget?.y === y)}
+                                class:drag-copy={isDragCopy && dragTarget?.x === x && dragTarget?.y === y}
+                                class:preview={false}
                                 onclick={() => handleTileClick(x, y)}
+                                onmousedown={(e) => handleMouseDown(x, y, e)}
+                                onmousemove={(e) => handleMouseMove(x, y, e)}
+                                onmouseup={handleMouseUp}
+                                onmouseleave={handleMouseLeave}
+                                ondragover={(e) => {
+                                    if (draggedPaletteTile !== null) {
+                                        e.preventDefault();
+                                        previewTarget = { x, y };
+                                    }
+                                }}
+                                ondragleave={() => {
+                                    if (draggedPaletteTile !== null) {
+                                        previewTarget = null;
+                                    }
+                                }}
+                                ondrop={(e) => {
+                                    e.preventDefault();
+                                    if (draggedPaletteTile !== null) {
+                                        tiles[y][x] = draggedPaletteTile;
+                                        previewTarget = null;
+                                    }
+                                }}
+                                tabindex="-1"
                             >
                                 {#if tile !== -1 && editorStore.editor}
                                     <canvas 
@@ -197,6 +326,19 @@
                                         height={editorStore.editor.tilemap.tileHeight}
                                         style="width: var(--tile-size); height: var(--tile-size); image-rendering: pixelated;"
                                         use:drawTile={{ editor: editorStore.editor, tileIndex: tile }}
+                                    ></canvas>
+                                {/if}
+                                {#if (isDragging && dragTarget?.x === x && dragTarget?.y === y && dragSource && editorStore.editor) || 
+                                     (!isDragging && previewTarget?.x === x && previewTarget?.y === y && draggedPaletteTile !== null && editorStore.editor)}
+                                    <canvas 
+                                        class="preview-tile"
+                                        width={editorStore.editor.tilemap.tileWidth}
+                                        height={editorStore.editor.tilemap.tileHeight}
+                                        style="width: var(--tile-size); height: var(--tile-size); image-rendering: pixelated;"
+                                        use:drawTile={{ 
+                                            editor: editorStore.editor, 
+                                            tileIndex: isDragging && dragSource ? tiles[dragSource.y][dragSource.x] : (draggedPaletteTile ?? 0)
+                                        }}
                                     ></canvas>
                                 {/if}
                             </button>
@@ -310,7 +452,7 @@
         display: grid;
         grid-template-columns: repeat(var(--grid-width), var(--tile-size, 32px));
         grid-template-rows: repeat(var(--grid-height), var(--tile-size, 32px));
-        gap: 1px;
+        gap: 0;
         padding: 6px;
         background: #444;
         border-radius: 4px;
@@ -322,6 +464,7 @@
         width: var(--tile-size);
         height: var(--tile-size);
         padding: 0;
+        margin: 0;
         background: #333;
         border: 1px solid #555;
         display: flex;
@@ -329,10 +472,15 @@
         justify-content: center;
         cursor: pointer;
         flex-shrink: 0;
+        user-select: none;
+        -webkit-user-select: none;
+        position: relative;
+        outline: none; /* Remove focus outline */
     }
 
     .tile-cell:hover {
         background: #3a3a3a;
+        z-index: 1; /* Ensure hover state appears above adjacent cells */
     }
 
     .tile-cell.empty {
@@ -418,5 +566,57 @@
         height: 16px;
         margin: 0;
         cursor: pointer;
+    }
+
+    .tile-cell.preview::before {
+        content: '';
+        position: absolute;
+        top: -1px;
+        left: -1px;
+        width: calc(100% + 2px);
+        height: calc(100% + 2px);
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        pointer-events: none;
+        z-index: 1;
+    }
+
+    .tile-cell.dragging {
+        opacity: 0.5;
+    }
+
+    .tile-cell.dragging::before {
+        content: '';
+        position: absolute;
+        top: -1px;
+        left: -1px;
+        width: calc(100% + 2px);
+        height: calc(100% + 2px);
+        border: 1px dashed #888;
+        pointer-events: none;
+        z-index: 1;
+    }
+
+    .tile-cell.drag-target::before {
+        content: '';
+        position: absolute;
+        top: -2px;
+        left: -2px;
+        width: calc(100% + 4px);
+        height: calc(100% + 4px);
+        border: 2px solid #00ff00;
+        pointer-events: none;
+        z-index: 1;
+    }
+
+    .tile-cell.drag-copy::before {
+        border-style: dashed;
+    }
+
+    .tile-cell .preview-tile {
+        position: absolute;
+        top: 0;
+        left: 0;
+        opacity: 0.5;
+        pointer-events: none;
     }
 </style> 

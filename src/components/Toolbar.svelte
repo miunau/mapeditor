@@ -2,6 +2,7 @@
     import { editorStore } from '../lib/state/EditorStore.svelte';
     import { calculateZoomTransform, findClosestZoomLevel } from '../lib/utils/zoom';
     import type { ZoomLevel } from '../lib/utils/zoom';
+  import IconButton from './IconButton.svelte';
   import IconAdjustment from './icons/IconAdjustment.svelte';
   import IconBrush from './icons/IconBrush.svelte';
   import IconExport from './icons/IconExport.svelte';
@@ -11,6 +12,7 @@
   import IconLayer from './icons/IconLayer.svelte';
   import IconNewFile from './icons/IconNewFile.svelte';
   import IconPaintBucket from './icons/IconPaintBucket.svelte';
+  import IconRectangle from './icons/IconRectangle.svelte';
   import IconResize from './icons/IconResize.svelte';
   import IconZoomIn from './icons/IconZoomIn.svelte';
   import IconZoomOut from './icons/IconZoomOut.svelte';
@@ -32,38 +34,36 @@
         const rect = editorStore.canvas?.getBoundingClientRect();
         if (!rect) return;
 
-        const newZoom = findClosestZoomLevel(editorStore.zoomLevel, direction);
-        const scale = newZoom / editorStore.zoomLevel;
+        const newZoom = findClosestZoomLevel(editorStore.zoomLevel, direction, 'coarse');
         
-        // Scale the offset directly, maintaining the current pan position
+        // Calculate the world point at the center of the viewport
+        const worldX = (-editorStore.offsetX + rect.width / 2) / editorStore.zoomLevel;
+        const worldY = (-editorStore.offsetY + rect.height / 2) / editorStore.zoomLevel;
+
+        // Calculate the new offset to keep this world point at the center
         const newOffset = {
-            x: editorStore.offsetX * scale,
-            y: editorStore.offsetY * scale
+            x: -(worldX * newZoom) + rect.width / 2,
+            y: -(worldY * newZoom) + rect.height / 2
         };
 
-        editorStore.setZoom(newZoom as ZoomLevel, newOffset);
+        editorStore.setZoom(newZoom, newOffset);
     }
 </script>
 
 {#if editorStore.editor}
 <div class="controls">
-    <button onclick={() => editorStore.setShowNewMapDialog(true)} title="Create new map">
-        <IconNewFile />
-    </button>
-    <button onclick={() => editorStore.setShowResizeDialog(true)} title="Resize current map">
-        <IconResize />
-    </button>
-    <button onclick={() => editorStore.setShowTilemapDialog(true)} title="Change tilemap settings">
-        <IconAdjustment />
-    </button>
-    <button 
-        onclick={() => editorStore.editor?.toggleGrid()}
-        class:active={editorStore.showGrid}
-        title="Toggle grid (V)"
-        class="tool-button"
-    >
-        <IconGrid />
-    </button>
+    <IconButton Icon={IconNewFile} title="Create new map" onclick={() => editorStore.setShowNewMapDialog(true)}>
+        New map
+    </IconButton>
+    <IconButton Icon={IconResize} title="Resize current map" onclick={() => editorStore.setShowResizeDialog(true)}>
+        Resize
+    </IconButton>
+    <IconButton Icon={IconAdjustment} title="Change tilemap settings" onclick={() => editorStore.setShowTilemapDialog(true)}>
+        Tilemap
+    </IconButton>
+    <IconButton Icon={IconGrid} title="Toggle grid (V)" onclick={() => editorStore.editor?.toggleGrid()} active={editorStore.showGrid}>
+        Grid (V)
+    </IconButton>
     <div class="layer-indicator">
         <span>
             <IconLayer />
@@ -97,30 +97,15 @@
     </div>
     <div class="brush-controls">
         <div class="tool-buttons">
-            <button 
-                class:active={editorStore.currentTool === 'brush'}
-                onclick={() => editorStore.selectTool('brush')}
-                title="Brush tool (B)"
-                class="tool-button"
-            >
-                <IconBrush/>
-            </button>
-            <button 
-                class:active={editorStore.currentTool === 'fill'}
-                onclick={() => editorStore.selectTool('fill')}
-                title="Flood fill tool (G)"
-                class="tool-button"
-            >
-                <IconPaintBucket />
-            </button>
-            <button 
-                class:active={editorStore.currentTool === 'rectangle'}
-                onclick={() => editorStore.selectTool('rectangle')}
-                title="Rectangle tool (R)"
-                class="tool-button"
-            >
-                □
-            </button>
+            <IconButton Icon={IconBrush} title="Brush tool (B)" onclick={() => editorStore.selectTool('brush')} active={editorStore.currentTool === 'brush'}>
+                Brush (B)
+            </IconButton>
+            <IconButton Icon={IconPaintBucket} title="Flood fill tool (G)" onclick={() => editorStore.selectTool('fill')} active={editorStore.currentTool === 'fill'}>
+                Fill (G)
+            </IconButton>
+            <IconButton Icon={IconRectangle} title="Rectangle tool (R)" onclick={() => editorStore.selectTool('rectangle')} active={editorStore.currentTool === 'rectangle'}>
+                Rect (R)
+            </IconButton>
         </div>
         <span>📏 </span>
         <button 
@@ -166,38 +151,23 @@
 
 <style>
     .controls {
-        padding: 10px;
-        background: #333;
         display: flex;
-        gap: 10px;
         align-items: center;
+        padding-bottom: 8px;
     }
 
     button {
-        width: 28px;
-        height: 28px;
-        padding: 0;
-        background: #666;
-        border: 1px solid #777;
-        border-radius: 4px;
-        color: white;
         cursor: pointer;
         display: flex;
         align-items: center;
         justify-content: center;
     }
 
-    button:hover {
-        background: #777;
-    }
-
     .layer-indicator {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 4px;
-        background: #444;
-        border-radius: 4px;
+        padding: 0 8px;
     }
 
     .layer-indicator span {
@@ -211,45 +181,18 @@
     }
 
     .layer-buttons button {
-        width: 28px;
-        height: 28px;
-        padding: 0;
-        font-size: 12px;
-        background: #555;
-        border: 1px solid #666;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .layer-buttons button:hover {
-        background: #666;
-    }
-
-    .layer-buttons button.active {
-        background: #00aa00;
-        border-color: #00cc00;
+        min-width: 24px;
     }
 
     .layer-buttons .all-layers {
         width: auto;
         min-width: 42px;
-        font-size: 12px;
         font-weight: bold;
     }
 
     .brush-controls {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 4px 8px;
-        background: #444;
-        border-radius: 4px;
-    }
-
-    .brush-controls span {
-        color: #fff;
-        font-size: 14px;
     }
 
     .tool-buttons {
@@ -268,13 +211,6 @@
         align-items: center;
         gap: 8px;
         padding: 4px 8px;
-        background: #444;
-        border-radius: 4px;
-    }
-
-    .zoom-controls span {
-        color: #fff;
-        font-size: 14px;
     }
 
     .zoom-controls .zoom-reset {
@@ -284,24 +220,4 @@
         padding: 0 8px;
     }
 
-    .tool-button {
-        width: 28px;
-        height: 28px;
-        padding: 0;
-        font-size: 16px;
-        background: #555;
-        border: 1px solid #666;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .tool-button:hover {
-        background: #666;
-    }
-
-    .tool-button.active {
-        background: #00aa00;
-        border-color: #00cc00;
-    }
 </style> 
