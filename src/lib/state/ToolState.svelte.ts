@@ -3,20 +3,21 @@ import type { CustomBrush } from '../types/map';
 import { editorStore } from './EditorStore.svelte';
 
 export type ToolContext = {
-    currentTool: 'brush' | 'fill' | 'rectangle';
+    currentTool: 'brush' | 'fill' | 'rectangle' | 'ellipse';
     brushSize: number;
     selectedTile: number;
     customBrush: CustomBrush | null;
     isWorldAlignedRepeat: boolean;
 }
 
-type ToolStateType = 'idle' | 'painting' | 'filling' | 'drawingRectangle';
+type ToolStateType = 'idle' | 'painting' | 'filling' | 'drawingRectangle' | 'drawingEllipse';
 
 export type ToolStates = {
     idle: FSMState<ToolContext, ToolStateType>;
     painting: FSMState<ToolContext, ToolStateType>;
     filling: FSMState<ToolContext, ToolStateType>;
     drawingRectangle: FSMState<ToolContext, ToolStateType>;
+    drawingEllipse: FSMState<ToolContext, ToolStateType>;
 }
 
 const initialContext: ToolContext = {
@@ -33,7 +34,8 @@ const states: ToolStates = {
             'startPaint': 'painting',
             'startFill': 'filling',
             'startRectangle': 'drawingRectangle',
-            'selectTool': (context: FSMContext<ToolContext>, tool: 'brush' | 'fill' | 'rectangle') => {
+            'startEllipse': 'drawingEllipse',
+            'selectTool': (context: FSMContext<ToolContext>, tool: 'brush' | 'fill' | 'rectangle' | 'ellipse') => {
                 context.currentTool = tool;
                 return 'idle';
             },
@@ -89,6 +91,19 @@ const states: ToolStates = {
             'setBrushSize': (context: FSMContext<ToolContext>, size: number) => {
                 context.brushSize = Math.max(1, size);
                 return 'drawingRectangle';
+            }
+        }
+    },
+    drawingEllipse: {
+        enter: (context: FSMContext<ToolContext>) => {
+            context.currentTool = 'ellipse';
+            return context;
+        },
+        on: {
+            'stopEllipse': 'idle',
+            'setBrushSize': (context: FSMContext<ToolContext>, size: number) => {
+                context.brushSize = Math.max(1, size);
+                return 'drawingEllipse';
             }
         }
     }

@@ -6,6 +6,7 @@
     import IconButton from './IconButton.svelte';
     import IconAdjustment from './icons/IconAdjustment.svelte';
     import IconBrush from './icons/IconBrush.svelte';
+  import IconEllipse from './icons/IconEllipse.svelte';
     import IconExport from './icons/IconExport.svelte';
     import IconGrid from './icons/IconGrid.svelte';
     import IconImport from './icons/IconImport.svelte';
@@ -51,11 +52,106 @@
         editorStore.setZoom(newZoom, newOffset);
     }
 
-    let audio: HTMLAudioElement | null = $state(null);
+    let audioContext: AudioContext | null = null;
+    let audioBuffer: AudioBuffer | null = null;
+    let lastClickTime = 0;
+    let filterFrequency = 20000; // Start fully open
+    let filterResetTimeout: number | null = null;
+    let flangerDepth = 0; // Start with no flanger
+    let panAmount = 0; // Start centered
+    let panDirection = 1; // 1 for right, -1 for left
 
-    function playClickSound(fn: () => void) {
-        if (audio) {
-            audio.play();
+    async function initAudio() {
+        audioContext = new AudioContext();
+        try {
+            const response = await fetch('/START.mp3');
+            const arrayBuffer = await response.arrayBuffer();
+            audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        } catch (error) {
+            console.error('Failed to load audio:', error);
+        }
+    }
+
+    async function playClickSound(fn: () => void) {
+        if (!audioContext) {
+            await initAudio();
+        }
+        if (audioContext && audioBuffer) {
+            const now = performance.now();
+            const timeSinceLastClick = now - lastClickTime;
+            lastClickTime = now;
+            
+            // Clear any pending reset
+            if (filterResetTimeout) {
+                clearTimeout(filterResetTimeout);
+            }
+
+            // Schedule reset after 500ms of no clicks
+            filterResetTimeout = setTimeout(() => {
+                filterFrequency = 20000;
+                flangerDepth = 0;
+                panAmount = 0;
+            }, 500);
+            
+            // Adjust parameters based on click speed
+            filterFrequency = Math.min(20000, 
+                timeSinceLastClick < 200 
+                    ? filterFrequency * 0.8
+                    : filterFrequency + 2000
+            );
+            
+            flangerDepth = Math.min(0.01, 
+                timeSinceLastClick < 200
+                    ? flangerDepth + 0.002
+                    : Math.max(0, flangerDepth - 0.001)
+            );
+
+            // Increase pan amount with faster clicks
+            panAmount = Math.min(0.8,
+                timeSinceLastClick < 200
+                    ? panAmount + 0.1
+                    : Math.max(0, panAmount - 0.05)
+            );
+            panDirection *= -1; // Alternate between left and right
+
+            const source = audioContext.createBufferSource();
+            const gainNode = audioContext.createGain();
+            const filterNode = audioContext.createBiquadFilter();
+            const delayNode = audioContext.createDelay();
+            const feedbackGain = audioContext.createGain();
+            const oscillator = audioContext.createOscillator();
+            const oscillatorGain = audioContext.createGain();
+            const stereoPanner = audioContext.createStereoPanner();
+            
+            // Set up stereo panning
+            stereoPanner.pan.value = panAmount * panDirection;
+            
+            // Rest of the audio setup...
+            delayNode.delayTime.value = 0.005;
+            oscillator.frequency.value = 0.5 + (flangerDepth * 100);
+            oscillatorGain.gain.value = flangerDepth;
+            feedbackGain.gain.value = Math.min(0.5, (20000 - filterFrequency) / 20000 * 0.8);
+            
+            oscillator.connect(oscillatorGain);
+            oscillatorGain.connect(delayNode.delayTime);
+            oscillator.start();
+            
+            gainNode.gain.value = 0.25;
+            filterNode.type = 'lowpass';
+            filterNode.frequency.value = filterFrequency;
+            source.playbackRate.value = 0.98 + Math.random() * 0.04;
+            
+            source.buffer = audioBuffer;
+            source.connect(filterNode);
+            filterNode.connect(delayNode);
+            filterNode.connect(stereoPanner); // Direct signal
+            delayNode.connect(stereoPanner);  // Delayed signal
+            delayNode.connect(feedbackGain);
+            feedbackGain.connect(delayNode);
+            stereoPanner.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            source.start(0);
         }
         fn();
     }
@@ -63,7 +159,6 @@
 
 {#if editorStore.editor}
 <div class="controls">
-    <audio src="/START.mp3" bind:this={audio}></audio>
     <IconButton Icon={IconGrid} title="Toggle grid (V)" onclick={() => playClickSound(() => editorStore.editor?.toggleGrid())} active={editorStore.showGrid}>
         Grid (V)
     </IconButton>
@@ -77,6 +172,9 @@
             </IconButton>
             <IconButton Icon={IconRectangle} title="Rectangle tool (R)" onclick={() => playClickSound(() => editorStore.selectTool('rectangle'))} active={editorStore.currentTool === 'rectangle'}>
                 Rect (R)
+            </IconButton>
+            <IconButton Icon={IconEllipse} title="Ellipse tool (E)" onclick={() => playClickSound(() => editorStore.selectTool('ellipse'))} active={editorStore.currentTool === 'ellipse'}>
+                Ellipse (E)
             </IconButton>
         </div>
     </div>

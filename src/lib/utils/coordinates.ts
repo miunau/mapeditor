@@ -115,4 +115,85 @@ export function calculateMapCenter(
         x: (canvasWidth - mapWidthPx) / 2,
         y: (canvasHeight - mapHeightPx) / 2
     };
-} 
+}
+
+// Generate points in an oval using Bresenham's algorithm with fill
+export function getEllipsePoints(centerX: number, centerY: number, radiusX: number, radiusY: number): { x: number, y: number }[] {
+    // Use a Set to track unique points using string keys
+    const pointSet = new Set<string>();
+    const points: { x: number, y: number }[] = [];
+    
+    // Helper to add a point if it hasn't been added before
+    const addPoint = (x: number, y: number) => {
+        const key = `${x},${y}`;
+        if (!pointSet.has(key)) {
+            pointSet.add(key);
+            points.push({ x, y });
+        }
+    };
+    
+    // Helper to add a horizontal line of points
+    const addHorizontalLine = (startX: number, endX: number, y: number) => {
+        for (let x = startX; x <= endX; x++) {
+            addPoint(x, y);
+        }
+    };
+
+    let x = 0;
+    let y = radiusY;
+    let d1 = (radiusY * radiusY) - (radiusX * radiusX * radiusY) + (0.25 * radiusX * radiusX);
+    let dx = 2 * radiusY * radiusY * x;
+    let dy = 2 * radiusX * radiusX * y;
+
+    // First region
+    while (dx < dy) {
+        // Add horizontal lines for each quadrant
+        addHorizontalLine(
+            centerX - x, centerX + x,
+            centerY + y
+        );
+        addHorizontalLine(
+            centerX - x, centerX + x,
+            centerY - y
+        );
+
+        x++;
+        dx += 2 * radiusY * radiusY;
+        d1 += dx + (radiusY * radiusY);
+
+        if (d1 >= 0) {
+            y--;
+            dy -= 2 * radiusX * radiusX;
+            d1 -= dy;
+        }
+    }
+
+    // Second region
+    let d2 = ((radiusY * radiusY) * ((x + 0.5) * (x + 0.5))) +
+             ((radiusX * radiusX) * ((y - 1) * (y - 1))) -
+             (radiusX * radiusX * radiusY * radiusY);
+
+    while (y >= 0) {
+        // Add horizontal lines for each quadrant
+        addHorizontalLine(
+            centerX - x, centerX + x,
+            centerY + y
+        );
+        addHorizontalLine(
+            centerX - x, centerX + x,
+            centerY - y
+        );
+
+        y--;
+        dy -= 2 * radiusX * radiusX;
+        d2 -= dy;
+
+        if (d2 <= 0) {
+            x++;
+            dx += 2 * radiusY * radiusY;
+            d2 += dx;   
+        }
+    }
+
+    return points;
+}

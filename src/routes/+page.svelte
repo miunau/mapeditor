@@ -18,7 +18,6 @@
 
     let editorCanvas: HTMLCanvasElement | undefined = $state();
     let editor: ReactiveMapEditor | undefined = $state();
-    let animationFrame: number | undefined = $state();
 
     let mapWidth = $state(64);
     let mapHeight = $state(32);
@@ -93,18 +92,38 @@
             return;
         }
 
-        // Pass other keyboard events to the editor
-        editor?.handleKeyDown(e);
+        // Check if any dialog is open
+        const isDialogOpen = editorStore.showNewMapDialog || 
+                           editorStore.showResizeDialog || 
+                           editorStore.showTilemapDialog || 
+                           editorStore.showImportDialog || 
+                           editorStore.showExportDialog || 
+                           editorStore.showShortcuts || 
+                           editorStore.showCustomBrushDialog;
+
+        // Skip editor keyboard handling if dialog is open, except for Shift key
+        if (!isDialogOpen || e.key === 'Shift') {
+            editor?.handleKeyDown(e);
+        }
     }
 
     function handleKeyUp(e: KeyboardEvent) {
-        editor?.handleKeyUp(e);
+        // Check if any dialog is open
+        const isDialogOpen = editorStore.showNewMapDialog || 
+                           editorStore.showResizeDialog || 
+                           editorStore.showTilemapDialog || 
+                           editorStore.showImportDialog || 
+                           editorStore.showExportDialog || 
+                           editorStore.showShortcuts || 
+                           editorStore.showCustomBrushDialog;
+
+        // Always handle Shift key up, even if dialog is open
+        if (!isDialogOpen || e.key === 'Shift') {
+            editor?.handleKeyUp(e);
+        }
     }
 
     onDestroy(() => {
-        if (animationFrame) {
-            cancelAnimationFrame(animationFrame);
-        }
         // Clean up event listeners
         if (editorCanvas) {
             editorCanvas.removeEventListener('mousedown', handleMouseDown);

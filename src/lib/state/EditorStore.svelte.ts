@@ -97,7 +97,7 @@ export const editorStore = {
             editor.showGrid = show;
         }
     },
-    selectTool(tool: 'brush' | 'fill' | 'rectangle') {
+    selectTool(tool: 'brush' | 'fill' | 'rectangle' | 'ellipse') {
         if (!editor) return;
 
         // Reset any active tool states

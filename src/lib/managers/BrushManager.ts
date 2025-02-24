@@ -3,7 +3,7 @@ import type { Tilemap } from '../tilemap';
 import type { Rect } from '../utils/coordinates';
 import { generateBrushId, createBrushPreview as createBrushPreviewUtil } from '../utils/brush';
 import { calculateBrushPattern } from '../utils/brush';
-import { isInMapBounds, calculateBrushTargetArea } from '../utils/coordinates';
+import { isInMapBounds, calculateBrushTargetArea, mapToScreen } from '../utils/coordinates';
 import { SvelteMap } from 'svelte/reactivity';
 
 export class BrushManager {
@@ -149,20 +149,47 @@ export class BrushManager {
         return this.applyBrushPattern(mapData, brush, targetArea, options);
     }
 
+    applyBrushToPoints(
+        mapData: number[][],
+        points: { x: number, y: number }[],
+        brush: Brush,
+        options: BrushApplicationOptions = {}
+    ): BrushApplicationResult {
+        if (!brush || options.isErasing || points.length === 0) {
+            return { modified: false };
+        }
+
+        const { targetArea, pattern } = this.calculatePatternForPoints(points, brush, options.useWorldAlignedRepeat || false);
+        let modified = false;
+
+        // Apply the pattern to each point
+        for (const point of points) {
+            const relX = point.x - targetArea.x;
+            const relY = point.y - targetArea.y;
+            const { sourceX, sourceY } = pattern[relY][relX];
+            const tileIndex = brush.tiles[sourceY][sourceX];
+            
+            if (tileIndex !== -1) {
+                if (mapData[point.y][point.x] !== tileIndex) {
+                    mapData[point.y][point.x] = tileIndex;
+                    modified = true;
+                }
+            }
+        }
+
+        return {
+            modified,
+            affectedArea: modified ? targetArea : undefined
+        };
+    }
+
     private applyBrushPattern(
         mapData: number[][],
         brush: Brush,
         targetArea: Rect,
         options: BrushApplicationOptions = {}
     ): BrushApplicationResult {
-        const pattern = calculateBrushPattern(
-            targetArea,
-            { 
-                width: brush.width,
-                height: brush.height
-            },
-            options.useWorldAlignedRepeat || false
-        );
+        const pattern = this.calculatePatternForArea(targetArea, brush, options.useWorldAlignedRepeat || false);
 
         let modified = false;
         for (let ty = 0; ty < targetArea.height; ty++) {
@@ -186,6 +213,124 @@ export class BrushManager {
             modified,
             affectedArea: modified ? targetArea : undefined
         };
+    }
+
+    private calculatePatternForArea(
+        targetArea: Rect,
+        brush: Brush,
+        useWorldAlignedRepeat: boolean
+    ): { sourceX: number, sourceY: number }[][] {
+        return calculateBrushPattern(
+            targetArea,
+            { width: brush.width, height: brush.height },
+            useWorldAlignedRepeat
+        );
+    }
+
+    private calculatePatternForPoints(
+        points: { x: number, y: number }[],
+        brush: Brush,
+        useWorldAlignedRepeat: boolean
+    ): { targetArea: Rect, pattern: { sourceX: number, sourceY: number }[][] } {
+        // Find the bounding box
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const point of points) {
+            minX = Math.min(minX, point.x);
+            minY = Math.min(minY, point.y);
+            maxX = Math.max(maxX, point.x);
+            maxY = Math.max(maxY, point.y);
+        }
+
+        const targetArea = {
+            x: minX,
+            y: minY,
+            width: maxX - minX + 1,
+            height: maxY - minY + 1
+        };
+
+        return {
+            targetArea,
+            pattern: this.calculatePatternForArea(targetArea, brush, useWorldAlignedRepeat)
+        };
+    }
+
+    drawBrushPreview(
+        ctx: CanvasRenderingContext2D,
+        brush: Brush,
+        targetArea: Rect,
+        getTile: (idx: number) => HTMLCanvasElement | null,
+        tileWidth: number,
+        tileHeight: number,
+        useWorldAlignedRepeat: boolean = false
+    ) {
+        const pattern = this.calculatePatternForArea(targetArea, brush, useWorldAlignedRepeat);
+
+        ctx.globalAlpha = 0.5;
+        for (let ty = 0; ty < targetArea.height; ty++) {
+            for (let tx = 0; tx < targetArea.width; tx++) {
+                const worldX = targetArea.x + tx;
+                const worldY = targetArea.y + ty;
+
+                const { sourceX, sourceY } = pattern[ty][tx];
+                const tileIndex = brush.tiles[sourceY][sourceX];
+                
+                if (tileIndex !== -1) {
+                    const tile = getTile(tileIndex);
+                    if (tile) {
+                        const screenPos = mapToScreen(
+                            worldX,
+                            worldY,
+                            0,
+                            0,
+                            1,
+                            tileWidth,
+                            tileHeight
+                        );
+                        ctx.drawImage(tile, screenPos.x, screenPos.y);
+                    }
+                }
+            }
+        }
+        ctx.globalAlpha = 1.0;
+    }
+
+    drawBrushPreviewOnPoints(
+        ctx: CanvasRenderingContext2D,
+        brush: Brush,
+        points: { x: number, y: number }[],
+        getTile: (idx: number) => HTMLCanvasElement | null,
+        tileWidth: number,
+        tileHeight: number,
+        useWorldAlignedRepeat: boolean = false
+    ) {
+        if (points.length === 0) return;
+
+        const { targetArea, pattern } = this.calculatePatternForPoints(points, brush, useWorldAlignedRepeat);
+
+        ctx.globalAlpha = 0.5;
+        for (const point of points) {
+            const relX = point.x - targetArea.x;
+            const relY = point.y - targetArea.y;
+            const { sourceX, sourceY } = pattern[relY][relX];
+            const tileIndex = brush.tiles[sourceY][sourceX];
+            
+            if (tileIndex !== -1) {
+                const tile = getTile(tileIndex);
+                if (tile) {
+                    const screenPos = mapToScreen(
+                        point.x,
+                        point.y,
+                        0,
+                        0,
+                        1,
+                        tileWidth,
+                        tileHeight
+                    );
+                    ctx.drawImage(tile, screenPos.x, screenPos.y);
+                }
+            }
+        }
+        ctx.globalAlpha = 1.0;
     }
 
     private applyErase(

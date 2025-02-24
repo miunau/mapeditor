@@ -6,7 +6,7 @@ import { floodFill } from './floodfill';
 import type { MapData, MapDimensions, CustomBrush } from './types/map';
 import { createEmptyMap, cloneMapData, validateMapDimensions } from './types/map';
 import type { Point, Rect } from './utils/coordinates';
-import { screenToMap, mapToScreen, isInMapBounds, getBrushArea, calculateMapCenter } from './utils/coordinates';
+import { screenToMap, mapToScreen, isInMapBounds, getBrushArea, calculateMapCenter, getEllipsePoints } from './utils/coordinates';
 import { 
     generateBrushId, 
     createBrushPreview, 
@@ -14,7 +14,8 @@ import {
     drawFloodFillPreview,
     drawCustomBrushPreview,
     drawRectanglePreview,
-    drawSingleTilePreview
+    drawSingleTilePreview,
+    createBrushPreview as createBrushPreviewUtil
 } from './utils/brush';
 import { 
     findClosestZoomLevel, 
@@ -119,6 +120,12 @@ export class ReactiveMapEditor {
     private readonly FPS_SAMPLE_SIZE = 60; // Increased to 60 frames
     private readonly FPS_SMOOTHING = 0.98; // Exponential smoothing factor (higher = smoother)
     private smoothedFps = 0;
+
+    // Add to class properties
+    private ellipseStartX = $state<number | null>(null);
+    private ellipseStartY = $state<number | null>(null);
+    private isDrawingEllipse = $state(false);
+    private isShiftPressed = $state(false);
 
     constructor(canvas: HTMLCanvasElement, width: number = 20, height: number = 15) {
         this.canvas = canvas;
@@ -423,7 +430,15 @@ export class ReactiveMapEditor {
             const selectedBrush = this.brushManager?.getSelectedBrush();
             if (selectedBrush) {
                 // Preview brush pattern on filled points
-                this.drawBrushPatternOnPoints(selectedBrush, filledPoints);
+                this.brushManager?.drawBrushPreviewOnPoints(
+                    this.ctx,
+                    selectedBrush,
+                    filledPoints,
+                    (idx) => this.tilemap.getTile(idx),
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.useWorldAlignedRepeat
+                );
             }
             
             // Draw highlight around filled area
@@ -435,6 +450,52 @@ export class ReactiveMapEditor {
                 this.zoomLevel,
                 mapToScreen
             );
+        } else if (this.isDrawingEllipse && this.ellipseStartX !== null && this.ellipseStartY !== null) {
+            // Calculate initial radii
+            let radiusX = Math.abs(this.hoverX - this.ellipseStartX);
+            let radiusY = Math.abs(this.hoverY - this.ellipseStartY);
+
+            // If shift is pressed, make it a perfect circle by using the larger radius
+            if (this.isShiftPressed) {
+                const maxRadius = Math.max(radiusX, radiusY);
+                radiusX = maxRadius;
+                radiusY = maxRadius;
+            }
+
+            const ellipsePoints = getEllipsePoints(
+                this.ellipseStartX,
+                this.ellipseStartY,
+                radiusX,
+                radiusY
+            );
+            
+            const selectedBrush = this.brushManager?.getSelectedBrush();
+            if (selectedBrush) {
+                // Preview brush pattern on ellipse points
+                this.brushManager?.drawBrushPreviewOnPoints(
+                    this.ctx,
+                    selectedBrush,
+                    ellipsePoints,
+                    (idx) => this.tilemap.getTile(idx),
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.useWorldAlignedRepeat
+                );
+            } else {
+                // Regular ellipse preview for erasing
+                drawRectanglePreview(
+                    this.ctx,
+                    this.ellipseStartX - radiusX,
+                    this.ellipseStartY - radiusY,
+                    radiusX * 2 + 1,
+                    radiusY * 2 + 1,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.zoomLevel,
+                    mapToScreen,
+                    { fillStyle: 'rgba(255, 255, 255, 0.1)' }
+                );
+            }
         } else if (this.isDrawingRectangle && this.rectangleStartX !== null && this.rectangleStartY !== null) {
             // Draw rectangle preview
             const startX = Math.min(this.rectangleStartX, this.hoverX);
@@ -454,7 +515,15 @@ export class ReactiveMapEditor {
                     width,
                     height
                 };
-                this.drawBrushPattern(selectedBrush, targetArea);
+                this.brushManager?.drawBrushPreview(
+                    this.ctx,
+                    selectedBrush,
+                    targetArea,
+                    (idx) => this.tilemap.getTile(idx),
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.useWorldAlignedRepeat
+                );
             } else {
                 // Regular rectangle preview for erasing
                 drawRectanglePreview(
@@ -475,13 +544,21 @@ export class ReactiveMapEditor {
             if (selectedBrush) {
                 // Regular brush preview
                 const targetArea = getBrushArea(
-                            this.hoverX,
-                            this.hoverY,
+                    this.hoverX,
+                    this.hoverY,
                     toolFSM.context.currentTool === 'rectangle' ? 1 : this.brushSize,  // Use size 1 if in rectangle mode
                     selectedBrush,
                     this.isCustomBrushMode
                 );
-                this.drawBrushPattern(selectedBrush, targetArea);
+                this.brushManager?.drawBrushPreview(
+                    this.ctx,
+                    selectedBrush,
+                    targetArea,
+                    (idx) => this.tilemap.getTile(idx),
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.useWorldAlignedRepeat
+                );
             } else {
                 // Erase preview
                 const brushArea = getBrushArea(
@@ -489,126 +566,22 @@ export class ReactiveMapEditor {
                     this.hoverY,
                     toolFSM.context.currentTool === 'rectangle' ? 1 : this.brushSize  // Use size 1 if in rectangle mode
                 );
-            drawRectanglePreview(
-                this.ctx,
-                brushArea.x,
-                brushArea.y,
-                brushArea.width,
-                brushArea.height,
-                this.tilemap.tileWidth,
-                this.tilemap.tileHeight,
-                this.zoomLevel,
-                mapToScreen,
-                { fillStyle: 'rgba(255, 255, 255, 0.1)' }
-            );
+                drawRectanglePreview(
+                    this.ctx,
+                    brushArea.x,
+                    brushArea.y,
+                    brushArea.width,
+                    brushArea.height,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.zoomLevel,
+                    mapToScreen,
+                    { fillStyle: 'rgba(255, 255, 255, 0.1)' }
+                );
             }
         }
 
         this.ctx.restore();
-    }
-
-    private drawBrushPattern(brush: Brush, targetArea: Rect) {
-        const pattern = calculateBrushPattern(
-            targetArea,
-            { 
-                width: brush.width,
-                height: brush.height
-            },
-            this.useWorldAlignedRepeat
-        );
-
-        this.ctx.globalAlpha = 0.5;
-        for (let ty = 0; ty < targetArea.height; ty++) {
-            for (let tx = 0; tx < targetArea.width; tx++) {
-                const worldX = targetArea.x + tx;
-                const worldY = targetArea.y + ty;
-
-                if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
-                    const { sourceX, sourceY } = pattern[ty][tx];
-                    const tileIndex = brush.tiles[sourceY][sourceX];
-                    
-                    if (tileIndex !== -1) {
-                        const tile = this.tilemap.getTile(tileIndex);
-                        if (tile) {
-                            const screenPos = mapToScreen(
-                                worldX,
-                                worldY,
-                                0,
-                                0,
-                                1,
-                                this.tilemap.tileWidth,
-                                this.tilemap.tileHeight
-                            );
-                            this.ctx.drawImage(tile, screenPos.x, screenPos.y);
-                        }
-                    }
-                }
-            }
-        }
-        this.ctx.globalAlpha = 1.0;
-
-        // Draw border around the entire brush area
-        drawRectanglePreview(
-            this.ctx,
-            targetArea.x,
-            targetArea.y,
-            targetArea.width,
-            targetArea.height,
-            this.tilemap.tileWidth,
-            this.tilemap.tileHeight,
-            this.zoomLevel,
-            mapToScreen
-        );
-    }
-
-    private drawBrushPatternOnPoints(brush: Brush, points: { x: number, y: number }[]) {
-        if (points.length === 0) return;
-
-        // Find the bounding box
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const point of points) {
-            minX = Math.min(minX, point.x);
-            minY = Math.min(minY, point.y);
-            maxX = Math.max(maxX, point.x);
-            maxY = Math.max(maxY, point.y);
-        }
-
-        const targetArea = {
-            x: minX,
-            y: minY,
-            width: maxX - minX + 1,
-            height: maxY - minY + 1
-        };
-
-        const pattern = calculateBrushPattern(
-            targetArea,
-            { width: brush.width, height: brush.height },
-            this.useWorldAlignedRepeat
-        );
-
-        this.ctx.globalAlpha = 0.5;
-        for (const point of points) {
-            const relX = point.x - targetArea.x;
-            const relY = point.y - targetArea.y;
-            const { sourceX, sourceY } = pattern[relY][relX];
-            const tileIndex = brush.tiles[sourceY][sourceX];
-            if (tileIndex !== -1) {
-                const tile = this.tilemap.getTile(tileIndex);
-                if (tile) {
-                    const screenPos = mapToScreen(
-                        point.x,
-                        point.y,
-                        0,
-                        0,
-                        1,
-                        this.tilemap.tileWidth,
-                        this.tilemap.tileHeight
-                    );
-                    this.ctx.drawImage(tile, screenPos.x, screenPos.y);
-                }
-            }
-        }
-        this.ctx.globalAlpha = 1.0;
     }
 
     // Mouse event handlers
@@ -629,20 +602,7 @@ export class ReactiveMapEditor {
         // Check if clicking in the palette area
         if (this.paletteManager?.isWithinPalette(mouseX, mouseY) === true) {
             if (e.button === 0) { // Left click for palette selection
-                const tilePos = this.paletteManager.getTileFromPaletteCoords(mouseX, mouseY);
-                if (tilePos) {
-                    // Store the initial position for potential drag selection
-                    this.selectionStartX = tilePos.tileX;
-                    this.selectionStartY = tilePos.tileY;
-                    this.selectionEndX = tilePos.tileX;
-                    this.selectionEndY = tilePos.tileY;
-
-                    // Immediately select the tile
-                    const tileIndex = tilePos.tileY * this.tilemap.width + tilePos.tileX;
-                    const brushId = `tile_${tileIndex}`;
-                    this.brushManager?.selectBrush(brushId);
-                    toolFSM.send('selectTile', tileIndex);
-                }
+                this.paletteManager.handlePaletteClick(mouseX, mouseY);
             } else if (e.button === 2) { // Right click for brush settings
                 this.paletteManager?.handlePaletteRightClick(mouseX, mouseY);
             }
@@ -673,6 +633,14 @@ export class ReactiveMapEditor {
                     this.undoBuffer = cloneMapData(this.mapData);
                 }
                 
+                if (toolFSM.context.currentTool === 'ellipse') {
+                    this.ellipseStartX = mapPos.x;
+                    this.ellipseStartY = mapPos.y;
+                    this.isDrawingEllipse = true;
+                    toolFSM.send('startEllipse');
+                    return; // Don't set isPainting while sizing the ellipse
+                }
+
                 this.isPainting = true;
                 this.paintTile = e.button === 2 ? -1 : toolFSM.context.selectedTile;
 
@@ -874,10 +842,12 @@ export class ReactiveMapEditor {
                 }
             } else {
                 // Fill rectangle with selected tile
+                const selectedBrush = this.brushManager?.getSelectedBrush();
                 for (let y = startY; y <= endY; y++) {
                     for (let x = startX; x <= endX; x++) {
                         if (isInMapBounds(x, y, this.getMapDimensions())) {
-                            const newTile = this.paintTile === -1 ? -1 : toolFSM.context.selectedTile;
+                            const newTile = this.paintTile === -1 ? -1 : 
+                                (selectedBrush?.isBuiltIn ? parseInt(selectedBrush.id.replace('tile_', '')) : toolFSM.context.selectedTile);
                             if (this.mapData[this.currentLayer][y][x] !== newTile) {
                                 this.mapData[this.currentLayer][y][x] = newTile;
                                 this.hasModifiedDuringPaint = true;
@@ -894,6 +864,76 @@ export class ReactiveMapEditor {
         // Reset rectangle drawing state
         this.rectangleStartX = null;
         this.rectangleStartY = null;
+
+        // Handle ellipse drawing completion
+        if (this.isDrawingEllipse && 
+            this.ellipseStartX !== null && 
+            this.ellipseStartY !== null && 
+            this.hoverX >= 0 && 
+            this.hoverY >= 0) {
+            
+            let radiusX = Math.abs(this.hoverX - this.ellipseStartX);
+            let radiusY = Math.abs(this.hoverY - this.ellipseStartY);
+
+            // If shift is pressed, make it a perfect circle by using the larger radius
+            if (this.isShiftPressed) {
+                const maxRadius = Math.max(radiusX, radiusY);
+                radiusX = maxRadius;
+                radiusY = maxRadius;
+            }
+
+            const ellipsePoints = getEllipsePoints(
+                this.ellipseStartX,
+                this.ellipseStartY,
+                radiusX,
+                radiusY
+            );
+            
+            const selectedBrush = this.brushManager?.getSelectedBrush();
+            if (selectedBrush) {
+                if (this.isCustomBrushMode && !selectedBrush.isBuiltIn) {
+                    // Apply brush pattern to all ellipse points
+                    const result = this.brushManager?.applyBrushToPoints(
+                        this.mapData[this.currentLayer],
+                        ellipsePoints,
+                        selectedBrush,
+                        { useWorldAlignedRepeat: this.useWorldAlignedRepeat }
+                    );
+                    if (result?.modified) {
+                        this.hasModifiedDuringPaint = true;
+                    }
+                } else {
+                    // Regular brush application for built-in brushes
+                    for (const point of ellipsePoints) {
+                        if (isInMapBounds(point.x, point.y, this.getMapDimensions())) {
+                            this.brushManager?.applyBrush(
+                                this.mapData[this.currentLayer],
+                                point.x,
+                                point.y,
+                                1,  // Use size 1 for ellipse points
+                                { useWorldAlignedRepeat: this.useWorldAlignedRepeat }
+                            );
+                            this.hasModifiedDuringPaint = true;
+                        }
+                    }
+                }
+            } else {
+                // Erase ellipse points
+                for (const point of ellipsePoints) {
+                    if (isInMapBounds(point.x, point.y, this.getMapDimensions())) {
+                        this.mapData[this.currentLayer][point.y][point.x] = -1;
+                        this.hasModifiedDuringPaint = true;
+                    }
+                }
+            }
+
+            this.isDrawingEllipse = false;
+            toolFSM.send('stopEllipse');
+        }
+
+        // Reset ellipse drawing state
+        this.ellipseStartX = null;
+        this.ellipseStartY = null;
 
         // If we modified anything during this paint operation, save the state
         if (this.hasModifiedDuringPaint && this.undoBuffer) {
@@ -928,6 +968,17 @@ export class ReactiveMapEditor {
         }
     }
 
+    cancelEllipseDrawing() {
+        if (this.isDrawingEllipse) {
+            this.ellipseStartX = null;
+            this.ellipseStartY = null;
+            this.isDrawingEllipse = false;
+            this.isPainting = false;
+            this.paintTile = null;
+            toolFSM.send('stopEllipse');
+        }
+    }
+
     // Brush application
     private applyBrush(mapX: number, mapY: number, isErasing: boolean = false) {
         if (!this.brushManager) return;
@@ -955,8 +1006,12 @@ export class ReactiveMapEditor {
             return;
         }
 
-        // Check if dialog is open (passed as custom property)
-        const isDialogOpen = (e as any).isDialogOpen;
+        // Handle shift key state
+        if (e.key === 'Shift') {
+            e.preventDefault();
+            this.isShiftPressed = true;
+            return;  // Return early for shift key
+        }
 
         // Handle arrow keys for panning
         switch (e.key) {
@@ -980,11 +1035,6 @@ export class ReactiveMapEditor {
                 this.keyPanState.down = true;
                 this.isKeyPanning = true;
                 break;
-        }
-
-        // Skip WASD handling if dialog is open
-        if (isDialogOpen) {
-            return;
         }
 
         // Check for number keys (0-9) for layer selection
@@ -1046,25 +1096,21 @@ export class ReactiveMapEditor {
                 e.preventDefault();
                 this.setBrushSize(this.brushSize + 1);
                 break;
-            case 'v':
-                e.preventDefault();
-                this.showGrid = !this.showGrid;
-                break;
             case 'w':
                 e.preventDefault();
-                    this.navigateBrushGrid('up');
+                this.navigateBrushGrid('up');
                 break;
             case 's':
                 e.preventDefault();
-                    this.navigateBrushGrid('down');
+                this.navigateBrushGrid('down');
                 break;
             case 'a':
                 e.preventDefault();
-                    this.navigateBrushGrid('left');
+                this.navigateBrushGrid('left');
                 break;
             case 'd':
                 e.preventDefault();
-                    this.navigateBrushGrid('right');
+                this.navigateBrushGrid('right');
                 break;
             case 'escape':
                 e.preventDefault();
@@ -1077,12 +1123,25 @@ export class ReactiveMapEditor {
                     this.selectionEndY = null;
                 } else {
                     this.cancelRectangleDrawing();
+                    this.cancelEllipseDrawing();
+                }
+                break;
+            case 'e':
+                if (!e.ctrlKey && !e.metaKey) {
+                    e.preventDefault();
+                    toolFSM.send('selectTool', 'ellipse');
                 }
                 break;
         }
     }
 
     handleKeyUp(e: KeyboardEvent) {
+        // Always handle shift key state
+        if (e.key === 'Shift') {
+            this.isShiftPressed = false;
+            return;  // Return early for shift key
+        }
+
         switch (e.key) {
             case 'ArrowLeft':
                 this.keyPanState.left = false;
@@ -1290,15 +1349,6 @@ export class ReactiveMapEditor {
     }
 
     // Custom brush methods
-    private recreateBrushPreview(brush: Omit<CustomBrush, "preview" | "id"> | CustomBrush): HTMLCanvasElement {
-        return createBrushPreview(
-            brush,
-            (index) => this.tilemap.getTile(index),
-            this.tilemap.tileWidth,
-            this.tilemap.tileHeight
-        );
-    }
-
     private createTemporaryBrushFromSelection() {
         if (!this.brushManager) return;
         console.log('Creating brush from selection');
@@ -1408,7 +1458,12 @@ export class ReactiveMapEditor {
             if (this.brushManager) {
                 const customBrushes = this.brushManager.getCustomBrushes();
                 for (const brush of customBrushes) {
-                    brush.preview = this.recreateBrushPreview(brush);
+                    brush.preview = createBrushPreviewUtil(
+                        brush,
+                        (idx: number) => this.tilemap.getTile(idx),
+                        this.tilemap.tileWidth,
+                        this.tilemap.tileHeight
+                    );
                 }
             }
             
@@ -1459,102 +1514,171 @@ export class ReactiveMapEditor {
         }
     }
 
-    private getTileFromPaletteCoords(x: number, y: number): { tileX: number, tileY: number } | null {
-        const paletteX = 10;
-        const paletteY = 10;
-        const tilesPerRow = this.tilemap.width;
-
-        // Calculate the tile position within the palette
-        const tileX = Math.floor((x - paletteX) / (this.tilemap.tileWidth + this.tilemap.spacing));
-        const tileY = Math.floor((y - paletteY) / (this.tilemap.tileHeight + this.tilemap.spacing));
-        
-        // Check if the click is within the actual tilemap bounds
-        if (tileX >= 0 && tileX < this.tilemap.width && 
-            tileY >= 0 && (tileY * tilesPerRow + tileX) < this.tilemap.width * this.tilemap.height) {
-            return { tileX, tileY };
-        }
-        return null;
-    }
-
     private navigateBrushGrid(direction: 'up' | 'down' | 'left' | 'right') {
-        if (!this.brushManager) return;
+        if (!this.brushManager || !this.paletteManager) return;
         const selectedBrush = this.brushManager.getSelectedBrush();
         if (!selectedBrush) {
-            // If no brush selected, select the first built-in brush
-            const builtInBrushes = this.brushManager.getBuiltInBrushes();
-            if (builtInBrushes.length > 0) {
-                this.brushManager.selectBrush(builtInBrushes[0].id);
-            }
+            this.brushManager.selectBrush('tile_0');
             return;
         }
-        
-        const builtInBrushes = this.brushManager.getBuiltInBrushes();
-        const customBrushes = this.brushManager.getCustomBrushes();
 
         if (selectedBrush.isBuiltIn) {
-            // Navigate through built-in brushes
             const currentIndex = parseInt(selectedBrush.id.replace('tile_', ''));
             const tilesPerRow = this.tilemap.width;
-            let newIndex: number;
+            const totalTiles = this.brushManager.getBuiltInBrushes().length;
+            const customBrushes = this.brushManager.getCustomBrushes();
 
             switch (direction) {
-                case 'up':
-                    newIndex = currentIndex - tilesPerRow;
-                    break;
-                case 'down':
-                    newIndex = currentIndex + tilesPerRow;
-                    if (newIndex >= builtInBrushes.length) {
-                        // Move to first custom brush when at bottom of tilemap
-                        if (customBrushes?.length > 0) {
-                            this.brushManager.selectBrush(customBrushes[0].id);
+                case 'up': {
+                    const upIndex = currentIndex - tilesPerRow;
+                    if (upIndex >= 0) {
+                        this.brushManager.selectBrush(`tile_${upIndex}`);
+                    } else if (customBrushes.length > 0) {
+                        // Wrap to last row of custom brushes
+                        const currentX = this.paletteManager.getBrushCenterX(selectedBrush.id);
+                        const lastRow = Math.max(...customBrushes.map(b => {
+                            const pos = this.paletteManager?.getBrushRowAndColumn(b.id);
+                            return pos ? pos.row : 0;
+                        }));
+                        const nearestBrushId = this.paletteManager?.findNearestBrushInRow(currentX, lastRow);
+                        if (nearestBrushId) {
+                            this.brushManager.selectBrush(nearestBrushId);
                         }
-                    return;
+                    } else {
+                        // Wrap to bottom row of tilemap
+                        const bottomRowIndex = Math.floor((totalTiles - 1) / tilesPerRow) * tilesPerRow + (currentIndex % tilesPerRow);
+                        if (bottomRowIndex < totalTiles) {
+                            this.brushManager.selectBrush(`tile_${bottomRowIndex}`);
+                        }
+                    }
+                    break;
                 }
+                case 'down': {
+                    const downIndex = currentIndex + tilesPerRow;
+                    if (downIndex < totalTiles) {
+                        this.brushManager.selectBrush(`tile_${downIndex}`);
+                    } else if (customBrushes.length > 0) {
+                        // Move to custom brush at similar X position
+                        const currentX = this.paletteManager.getBrushCenterX(selectedBrush.id);
+                        const nearestCustomBrushId = this.paletteManager.findNearestCustomBrush(currentX);
+                        if (nearestCustomBrushId) {
+                            this.brushManager.selectBrush(nearestCustomBrushId);
+                        }
+                    } else {
+                        // Wrap to top row of tilemap
+                        const topRowIndex = currentIndex % tilesPerRow;
+                        this.brushManager.selectBrush(`tile_${topRowIndex}`);
+                    }
                     break;
-                case 'left':
-                    newIndex = currentIndex - 1;
+                }
+                case 'left': {
+                    const nextIndex = currentIndex - 1;
+                    if (nextIndex >= 0) {
+                        this.brushManager.selectBrush(`tile_${nextIndex}`);
+                    } else {
+                        // Wrap to last row of custom brushes
+                        const currentY = this.paletteManager?.getBrushCenterY(selectedBrush.id);
+                        const customBrushes = this.brushManager.getCustomBrushes();
+                        const lastRow = Math.max(...customBrushes.map(b => {
+                            const pos = this.paletteManager?.getBrushRowAndColumn(b.id);
+                            return pos ? pos.row : 0;
+                        }));
+                        const nearestBrushId = this.paletteManager.findNearestBrushInRow(0, currentY);
+                        if (nearestBrushId) {
+                            this.brushManager.selectBrush(nearestBrushId);
+                        }
+                    }
                     break;
-                case 'right':
-                    newIndex = currentIndex + 1;
+                }
+                case 'right': {
+                    const nextIndex = currentIndex + 1;
+                    if (nextIndex < totalTiles) {
+                        this.brushManager.selectBrush(`tile_${nextIndex}`);
+                    } else {
+                        // Wrap to first row of custom brushes
+                        const currentY = this.paletteManager.getBrushCenterY(selectedBrush.id);
+                        const customBrushes = this.brushManager.getCustomBrushes();
+                        const firstRow = Math.min(...customBrushes.map(b => {
+                            const pos = this.paletteManager?.getBrushRowAndColumn(b.id);
+                            return pos ? pos.row : 0;
+                        }));
+                        const nearestBrushId = this.paletteManager.findNearestBrushInRow(this.tilemap.width - 1, currentY);
+                        if (nearestBrushId) {
+                            this.brushManager.selectBrush(nearestBrushId);
+                        }
+                    }
                     break;
-            }
-
-            // Find the brush with the new index
-            const newBrush = builtInBrushes.find(b => b.id === `tile_${newIndex}`);
-            if (newBrush) {
-                this.brushManager.selectBrush(newBrush.id);
+                }
             }
         } else {
             // Navigate through custom brushes
+            const customBrushes = this.brushManager.getCustomBrushes();
             const currentIndex = customBrushes.findIndex(b => b.id === selectedBrush.id);
             if (currentIndex === -1) return;
 
-            let newIndex: number;
+            const position = this.paletteManager.getBrushRowAndColumn(selectedBrush.id);
+            if (!position) return;
+
             switch (direction) {
-                case 'up':
-                    if (currentIndex === 0) {
-                        // Move to last row of built-in brushes
-                        const lastBuiltInBrush = builtInBrushes[builtInBrushes.length - 1];
-                        if (lastBuiltInBrush) {
-                            this.brushManager.selectBrush(lastBuiltInBrush.id);
+                case 'up': {
+                    if (position.row > 0) {
+                        const currentPos = this.paletteManager.getBrushCenterPosition(selectedBrush.id);
+                        if (currentPos) {
+                            const nearestBrushId = this.paletteManager.findNearestBrushInRow(currentPos.x, position.row - 1);
+                            if (nearestBrushId) {
+                                this.brushManager.selectBrush(nearestBrushId);
+                            }
                         }
-                        return;
+                    } else {
+                        // Move to tilemap when in first row
+                        const currentX = this.paletteManager.getBrushCenterX(selectedBrush.id);
+                        const nearestTileId = this.paletteManager.findNearestTile(currentX, 'up');
+                        if (nearestTileId) {
+                            this.brushManager.selectBrush(nearestTileId);
+                        }
                     }
-                    newIndex = currentIndex - 1;
                     break;
-                case 'down':
-                    newIndex = currentIndex + 1;
+                }
+                case 'down': {
+                    const lastRow = Math.max(...customBrushes.map(b => {
+                        const pos = this.paletteManager?.getBrushRowAndColumn(b.id);
+                        return pos ? pos.row : 0;
+                    }));
+                    if (position.row >= lastRow) {
+                        // Wrap to first row of map tiles
+                        const currentX = this.paletteManager.getBrushCenterX(selectedBrush.id);
+                        const nearestTileId = this.paletteManager.findNearestTile(currentX, 'down');
+                        if (nearestTileId) {
+                            this.brushManager.selectBrush(nearestTileId);
+                        }
+                    } else {
+                        const currentPos = this.paletteManager.getBrushCenterPosition(selectedBrush.id);
+                        if (currentPos) {
+                            const nearestBrushId = this.paletteManager.findNearestBrushInRow(currentPos.x, position.row + 1);
+                            if (nearestBrushId) {
+                                this.brushManager.selectBrush(nearestBrushId);
+                            }
+                        }
+                    }
                     break;
+                }
                 case 'left':
-                    newIndex = currentIndex - 1;
+                    if (currentIndex > 0) {
+                        this.brushManager.selectBrush(customBrushes[currentIndex - 1].id);
+                    } else {
+                        const tilesPerRow = this.tilemap.width;
+                        const totalRows = Math.ceil(this.brushManager.getBuiltInBrushes().length / tilesPerRow);
+                        const rightmostTileIndex = Math.min((totalRows * tilesPerRow) - 1, this.brushManager.getBuiltInBrushes().length - 1);
+                        this.brushManager.selectBrush(`tile_${rightmostTileIndex}`);
+                    }
                     break;
                 case 'right':
-                    newIndex = currentIndex + 1;
+                    if (currentIndex < customBrushes.length - 1) {
+                        this.brushManager.selectBrush(customBrushes[currentIndex + 1].id);
+                    } else {
+                        this.brushManager.selectBrush('tile_0');
+                    }
                     break;
-            }
-
-            if (newIndex >= 0 && newIndex < customBrushes.length) {
-                this.brushManager.selectBrush(customBrushes[newIndex].id);
             }
         }
     }
