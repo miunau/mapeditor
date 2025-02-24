@@ -12,9 +12,6 @@
     function handleKeyDown(e: KeyboardEvent) {
         if (!editorStore.showCustomBrushDialog) return;
         
-        // Prevent map navigation while dialog is open
-        e.stopPropagation();
-
         if (e.target instanceof HTMLInputElement) return;
 
         const tilemapWidth = editorStore.editor?.tilemap.width || 0;
@@ -24,24 +21,28 @@
         switch (e.key.toLowerCase()) {
             case 'w':
                 e.preventDefault();
+                e.stopPropagation();
                 if (selectedTile >= tilemapWidth) {
                     selectedTile -= tilemapWidth;
                 }
                 break;
             case 's':
                 e.preventDefault();
+                e.stopPropagation();
                 if (selectedTile < (tilemapWidth * (tilemapHeight - 1))) {
                     selectedTile += tilemapWidth;
                 }
                 break;
             case 'a':
                 e.preventDefault();
+                e.stopPropagation();
                 if (selectedTile > 0) {
                     selectedTile--;
                 }
                 break;
             case 'd':
                 e.preventDefault();
+                e.stopPropagation();
                 if (selectedTile < totalTiles - 1) {
                     selectedTile++;
                 }
@@ -59,15 +60,15 @@
                 tiles = brush.tiles.map(row => [...row]);
                 selectedTile = -1;
             }
+        } else if (editorStore.showCustomBrushDialog) {
+            // Initialize empty brush pattern
+            tiles = Array(height).fill(null)
+                .map(() => Array(width).fill(-1));
         }
     });
 
     $effect(() => {
         if (editorStore.showCustomBrushDialog) {
-            // Initialize empty brush pattern
-            tiles = Array(height).fill(null)
-                .map(() => Array(width).fill(-1));
-            
             // Add event listener for WASD navigation
             window.addEventListener('keydown', handleKeyDown);
             return () => {
@@ -103,10 +104,10 @@
         width = Math.max(1, Math.min(9, width));
         height = Math.max(1, Math.min(9, height));
 
-        // Create new tiles array with new dimensions
+        // Create new tiles array with new dimensions, preserving existing tiles
         const newTiles = Array(height).fill(null)
             .map((_, y) => Array(width).fill(null)
-                .map((_, x) => (tiles[y]?.[x] ?? -1)));
+                .map((_, x) => tiles[y]?.[x] ?? -1));
         tiles = newTiles;
     }
 </script>

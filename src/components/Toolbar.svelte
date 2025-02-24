@@ -21,14 +21,15 @@
         if (!rect) return;
 
         const newZoom = findClosestZoomLevel(editorStore.zoomLevel, direction);
-        const transform = calculateZoomTransform(
-            newZoom,
-            editorStore.zoomLevel,
-            { x: rect.width / 2, y: rect.height / 2 },
-            { x: editorStore.offsetX, y: editorStore.offsetY }
-        );
+        const scale = newZoom / editorStore.zoomLevel;
         
-        editorStore.setZoom(transform.zoom as ZoomLevel, { x: transform.offset.x, y: transform.offset.y });
+        // Scale the offset directly, maintaining the current pan position
+        const newOffset = {
+            x: editorStore.offsetX * scale,
+            y: editorStore.offsetY * scale
+        };
+
+        editorStore.setZoom(newZoom as ZoomLevel, newOffset);
     }
 </script>
 
@@ -91,14 +92,6 @@
                 class="tool-button"
             >
                 🪣
-            </button>
-            <button 
-                class:active={editorStore.currentTool === 'eraser'}
-                onclick={() => editorStore.selectTool('eraser')}
-                title="Eraser tool (E)"
-                class="tool-button"
-            >
-                ⌫
             </button>
         </div>
         <span>📏 </span>

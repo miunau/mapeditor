@@ -1,20 +1,20 @@
 import { FSM, type FSMContext, type FSMState } from '../utils/fsm.svelte.js';
 import type { CustomBrush } from '../types/map';
+import { editorStore } from './EditorStore.svelte';
 
 export type ToolContext = {
-    currentTool: 'brush' | 'fill' | 'eraser';
+    currentTool: 'brush' | 'fill';
     brushSize: number;
     selectedTile: number;
     customBrush: CustomBrush | null;
     isWorldAlignedRepeat: boolean;
 }
 
-type ToolStateType = 'idle' | 'painting' | 'erasing' | 'filling';
+type ToolStateType = 'idle' | 'painting' | 'filling';
 
 export type ToolStates = {
     idle: FSMState<ToolContext, ToolStateType>;
     painting: FSMState<ToolContext, ToolStateType>;
-    erasing: FSMState<ToolContext, ToolStateType>;
     filling: FSMState<ToolContext, ToolStateType>;
 }
 
@@ -30,9 +30,8 @@ const states: ToolStates = {
     idle: {
         on: {
             'startPaint': 'painting',
-            'startErase': 'erasing',
             'startFill': 'filling',
-            'selectTool': (context: FSMContext<ToolContext>, tool: 'brush' | 'fill' | 'eraser') => {
+            'selectTool': (context: FSMContext<ToolContext>, tool: 'brush' | 'fill') => {
                 context.currentTool = tool;
                 return 'idle';
             },
@@ -41,7 +40,9 @@ const states: ToolStates = {
                 return 'idle';
             },
             'selectTile': (context: FSMContext<ToolContext>, tile: number) => {
-                context.selectedTile = tile;
+                if (!editorStore.showCustomBrushDialog) {
+                    context.selectedTile = tile;
+                }
                 return 'idle';
             },
             'selectCustomBrush': (context: FSMContext<ToolContext>, brush: CustomBrush | null) => {
@@ -64,19 +65,6 @@ const states: ToolStates = {
             'setBrushSize': (context: FSMContext<ToolContext>, size: number) => {
                 context.brushSize = Math.max(1, size);
                 return 'painting';
-            }
-        }
-    },
-    erasing: {
-        enter: (context: FSMContext<ToolContext>) => {
-            context.currentTool = 'eraser';
-            return context;
-        },
-        on: {
-            'stopErase': 'idle',
-            'setBrushSize': (context: FSMContext<ToolContext>, size: number) => {
-                context.brushSize = Math.max(1, size);
-                return 'erasing';
             }
         }
     },

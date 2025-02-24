@@ -53,11 +53,11 @@ export function calculateBrushPattern(
     // Calculate region sizes for 9-slice scaling
     const leftWidth = Math.min(brushWidth, 1);
     const rightWidth = Math.min(brushWidth - leftWidth, 1);
-    const centerWidth = Math.max(0, brushWidth - leftWidth - rightWidth);
+    const centerWidth = Math.max(1, brushWidth - leftWidth - rightWidth);
 
     const topHeight = Math.min(brushHeight, 1);
     const bottomHeight = Math.min(brushHeight - topHeight, 1);
-    const centerHeight = Math.max(0, brushHeight - topHeight - bottomHeight);
+    const centerHeight = Math.max(1, brushHeight - topHeight - bottomHeight);
 
     // Calculate repeat origin based on world position or brush position
     const repeatOriginX = useWorldAlignedRepeat ? 
@@ -85,7 +85,8 @@ export function calculateBrushPattern(
                 sourceX = brushWidth - (targetWidth - tx);
             } else {
                 // Center region - tile the middle section with offset
-                sourceX = leftWidth + ((tx - leftWidth + repeatOriginX) % centerWidth);
+                const centerX = tx - leftWidth;
+                sourceX = leftWidth + ((centerX + repeatOriginX) % centerWidth);
             }
 
             // Map y position to source region
@@ -97,12 +98,13 @@ export function calculateBrushPattern(
                 sourceY = brushHeight - (targetHeight - ty);
             } else {
                 // Center region - tile the middle section with offset
-                sourceY = topHeight + ((ty - topHeight + repeatOriginY) % centerHeight);
+                const centerY = ty - topHeight;
+                sourceY = topHeight + ((centerY + repeatOriginY) % centerHeight);
             }
 
-            // Clamp to brush dimensions
-            sourceX = Math.min(sourceX, brushWidth - 1);
-            sourceY = Math.min(sourceY, brushHeight - 1);
+            // Ensure we stay within brush dimensions
+            sourceX = Math.min(Math.max(0, sourceX), brushWidth - 1);
+            sourceY = Math.min(Math.max(0, sourceY), brushHeight - 1);
 
             pattern[ty][tx] = { sourceX, sourceY };
         }

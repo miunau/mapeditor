@@ -1,7 +1,5 @@
 import { toolFSM } from './ToolState.svelte';
 import { layerFSM } from './LayerState.svelte';
-import { viewFSM } from './ViewState.svelte';
-import { historyFSM } from './HistoryState.svelte';
 import type { MapData, CustomBrush } from '../types/map';
 import type { Point } from '../utils/coordinates';
 import type { ZoomLevel } from '../utils/zoom';
@@ -67,15 +65,15 @@ export const editorStore = {
     get MAX_LAYERS() { return layerFSM.context.MAX_LAYERS; },
 
     // View state
-    get zoomLevel() { return viewFSM.context.zoomLevel; },
-    get offsetX() { return viewFSM.context.offsetX; },
-    get offsetY() { return viewFSM.context.offsetY; },
-    get showGrid() { return viewFSM.context.showGrid; },
-    get isPanning() { return viewFSM.context.isPanning; },
+    get zoomLevel() { return editor?.zoomLevel || 1; },
+    get offsetX() { return editor?.offsetX || 0; },
+    get offsetY() { return editor?.offsetY || 0; },
+    get showGrid() { return editor === undefined ? true : editor.showGrid; },
+    get isPanning() { return editor?.isPanning || false; },
     get panVelocity() { 
         return { 
-            x: viewFSM.context.panVelocityX, 
-            y: viewFSM.context.panVelocityY 
+            x: editor?.panVelocityX || 0, 
+            y: editor?.panVelocityY || 0 
         }; 
     },
 
@@ -87,9 +85,13 @@ export const editorStore = {
         }
     },
     toggleGrid() {
-        viewFSM.send('toggleGrid');
         if (editor) {
-            editor.showGrid = !editor.showGrid;
+            editor.toggleGrid();
+        }
+    },
+    setShowGrid(show: boolean) {
+        if (editor) {
+            editor.showGrid = show;
         }
     },
     selectTool(tool: string) {
@@ -121,19 +123,11 @@ export const editorStore = {
                 clientX: focusPoint.x, 
                 clientY: focusPoint.y 
             } as WheelEvent);
-            // Update FSM state to match editor state
-            viewFSM.send('setZoom', { 
-                level: editor.zoomLevel as ZoomLevel, 
-                focusPoint: { x: editor.offsetX, y: editor.offsetY }
-            });
         }
     },
     setZoom(level: ZoomLevel, offset: Point) {
-        viewFSM.send('setZoom', { level, focusPoint: offset });
         if (editor) {
-            editor.zoomLevel = level;
-            editor.offsetX = offset.x;
-            editor.offsetY = offset.y;
+            editor.setZoom(level, offset);
         }
     },
     toggleLayerVisibility(layer: number) {
@@ -144,44 +138,10 @@ export const editorStore = {
     },
 
     // History state
-    get currentMapData() { return historyFSM.context.currentMapData; },
-    get hasUnsavedChanges() { return historyFSM.context.hasUnsavedChanges; },
-    get canUndo() { return historyFSM.context.undoStack.length > 1; },
-    get canRedo() { return historyFSM.context.redoStack.length > 0; },
-
-    // Tool actions
-    startPainting() {
-        toolFSM.send('startPaint');
-    },
-    stopPainting() {
-        toolFSM.send('stopPaint');
-    },
-    startErasing() {
-        toolFSM.send('startErase');
-    },
-    stopErasing() {
-        toolFSM.send('stopErase');
-    },
-    startFilling() {
-        toolFSM.send('startFill');
-    },
-    stopFilling() {
-        toolFSM.send('stopFill');
-    },
-
-    // History actions
-    saveState(mapData: MapData) {
-        historyFSM.send('saveState', mapData);
-    },
-    markSaved() {
-        historyFSM.send('markSaved');
-    },
-    undo() {
-        historyFSM.send('undo');
-    },
-    redo() {
-        historyFSM.send('redo');
-    },
+    get undoStack() { return editor?.undoStack || []; },
+    get redoStack() { return editor?.redoStack || []; },
+    get canUndo() { return (editor?.undoStack.length || 0) > 0; },
+    get canRedo() { return (editor?.redoStack.length || 0) > 0; },
 
     // Editor initialization
     init(canvas: HTMLCanvasElement) {
@@ -192,4 +152,4 @@ export const editorStore = {
 };
 
 // Export FSMs for direct access if needed
-export { toolFSM, layerFSM, viewFSM, historyFSM }; 
+export { toolFSM, layerFSM }; 

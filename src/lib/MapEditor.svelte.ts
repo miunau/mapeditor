@@ -11,8 +11,6 @@ import type { ResizeAlignment } from './types/map';
 
 import { toolFSM } from './state/ToolState.svelte';
 import { layerFSM } from './state/LayerState.svelte';
-import { viewFSM } from './state/ViewState.svelte';
-import { historyFSM } from './state/HistoryState.svelte';
 import { editorStore } from './state/EditorStore.svelte';
 
 // The singleton editor instance
@@ -61,6 +59,7 @@ export class ReactiveMapEditor {
     private numberTimeout: number | null = null;
 
     // For undo/redo
+    private undoBuffer: MapData | null = null;
     undoStack = $state<MapData[]>([]);
     redoStack = $state<MapData[]>([]);
     maxUndoSteps = 50;
@@ -76,6 +75,12 @@ export class ReactiveMapEditor {
     private tileWidth = $state(16);
     private tileHeight = $state(16);
     private tileSpacing = $state(1);
+
+    // View state
+    showGrid = $state(true);
+    zoomLevel = $state<ZoomLevel>(1);
+    offsetX = $state(0);
+    offsetY = $state(0);
 
     constructor(canvas: HTMLCanvasElement, width: number = 20, height: number = 15) {
         this.canvas = canvas;
@@ -121,36 +126,11 @@ export class ReactiveMapEditor {
                 }
             });
         });
-
-        // Sync view state
-        $effect(() => {
-            this.showGrid = viewFSM.context.showGrid;
-            this.zoomLevel = viewFSM.context.zoomLevel as ZoomLevel;
-            this.offsetX = viewFSM.context.offsetX;
-            this.offsetY = viewFSM.context.offsetY;
-        });
     }
 
     // Getters and setters that sync with FSMs
     get currentLayer() { return layerFSM.context.currentLayer; }
     set currentLayer(value: number) { layerFSM.send('selectLayer', value); }
-
-    get showGrid() { return viewFSM.context.showGrid; }
-    set showGrid(value: boolean) { viewFSM.send('toggleGrid'); }
-
-    get zoomLevel() { return viewFSM.context.zoomLevel as ZoomLevel; }
-    set zoomLevel(value: ZoomLevel) {
-        viewFSM.send('setZoom', { 
-            level: value, 
-            focusPoint: { x: this.offsetX, y: this.offsetY }
-        });
-    }
-
-    get offsetX() { return viewFSM.context.offsetX; }
-    set offsetX(value: number) { viewFSM.send('setOffset', { x: value, y: this.offsetY }); }
-
-    get offsetY() { return viewFSM.context.offsetY; }
-    set offsetY(value: number) { viewFSM.send('setOffset', { x: this.offsetX, y: value }); }
 
     get brushSize() { return toolFSM.context.brushSize; }
     set brushSize(value: number) { toolFSM.send('setBrushSize', value); }
@@ -171,7 +151,9 @@ export class ReactiveMapEditor {
 
     // Grid methods
     toggleGrid() {
-        viewFSM.send('toggleGrid');
+        this.showGrid = !this.showGrid;
+        // Notify editor store of the change
+        editorStore.setShowGrid(this.showGrid);
     }
 
     // Brush size methods
@@ -197,17 +179,7 @@ export class ReactiveMapEditor {
         
         // Only proceed if zoom actually changed
         if (newZoom !== this.zoomLevel) {
-            const transform = calculateZoomTransform(
-                newZoom,
-                this.zoomLevel,
-                { x: mouseX, y: mouseY },
-                { x: this.offsetX, y: this.offsetY }
-            );
-            
-            viewFSM.send('setZoom', { 
-                level: transform.zoom as ZoomLevel, 
-                focusPoint: { x: mouseX, y: mouseY }
-            });
+            this.setZoom(newZoom as ZoomLevel, { x: mouseX, y: mouseY });
         }
     }
 
@@ -220,10 +192,9 @@ export class ReactiveMapEditor {
             { x: this.offsetX, y: this.offsetY }
         );
         
-        viewFSM.send('setZoom', { 
-            level: transform.zoom as ZoomLevel, 
-            focusPoint
-        });
+        this.zoomLevel = transform.zoom;
+        this.offsetX = transform.offset.x;
+        this.offsetY = transform.offset.y;
     }
 
     // Update panning animation
@@ -773,8 +744,8 @@ export class ReactiveMapEditor {
             this.canvas.height,
             this.mapData[0][0].length,
             this.mapData[0].length,
-            this.tilemap.tileWidth,
-            this.tilemap.tileHeight
+            this.tilemap.tileWidth * this.zoomLevel,
+            this.tilemap.tileHeight * this.zoomLevel
         );
         this.offsetX = center.x;
         this.offsetY = center.y;
@@ -831,18 +802,20 @@ export class ReactiveMapEditor {
 
         if (isInMapBounds(mapPos.x, mapPos.y, this.getMapDimensions())) {
             if (e.button === 0 || e.button === 2) { // Left or right click
+                // Store the initial state before painting
+                if (!this.undoBuffer) {
+                    this.undoBuffer = cloneMapData(this.mapData);
+                }
+                
                 this.isPainting = true;
                 this.paintTile = e.button === 0 ? toolFSM.context.selectedTile : -1;
 
-                if (this.isFloodFillMode && e.button === 0) {
+                if (this.isFloodFillMode) {
                     // Get the target value (the tile we're replacing)
                     const targetValue = this.mapData[this.currentLayer][mapPos.y][mapPos.x];
                     
                     // Only flood fill if we're changing to a different tile
                     if (targetValue !== this.paintTile) {
-                        // Create a copy of the current layer for undo
-                        const layerCopy = this.mapData[this.currentLayer].map(row => [...row]);
-                        
                         // Perform flood fill
                         const filledPoints = floodFill(
                             this.mapData[this.currentLayer],
@@ -854,7 +827,6 @@ export class ReactiveMapEditor {
                         
                         if (filledPoints.length > 0) {
                             this.hasModifiedDuringPaint = true;
-                            historyFSM.send('saveState', cloneMapData(this.mapData));
                         }
                     }
                 } else {
@@ -918,18 +890,33 @@ export class ReactiveMapEditor {
 
     handleMouseUp() {
         // If we modified anything during this paint operation, save the state
-        if (this.hasModifiedDuringPaint) {
-            historyFSM.send('saveState', cloneMapData(this.mapData));
+        if (this.hasModifiedDuringPaint && this.undoBuffer) {
+            // Push the state that was captured at the start of painting
+            this.undoStack.push(this.undoBuffer);
+            
+            // Trim undo stack if it's too long
+            if (this.undoStack.length > this.maxUndoSteps) {
+                this.undoStack.shift();
+            }
+            
+            // Clear redo stack when new state is saved
+            this.redoStack = [];
+            
+            // Update FSM state only once at the end of painting
+            // historyFSM.send('saveState', cloneMapData(this.mapData));
+            
+            this.undoBuffer = null;
+            this.hasModifiedDuringPaint = false;
         }
         
         this.isPanning = false;
         this.isPainting = false;
         this.paintTile = null;
-        this.hasModifiedDuringPaint = false;
     }
 
     // Brush application
     private applyBrush(mapX: number, mapY: number, isErasing: boolean = false) {
+        let modified = false;
         if (this.isCustomBrushMode && this.selectedCustomBrush && !isErasing) {
             const { tiles, width: brushWidth, height: brushHeight } = this.selectedCustomBrush;
             
@@ -954,8 +941,8 @@ export class ReactiveMapEditor {
                         const tileIndex = tiles[sourceY][sourceX];
                         if (tileIndex !== -1) {
                             if (this.mapData[this.currentLayer][worldY][worldX] !== tileIndex) {
-                                this.hasModifiedDuringPaint = true;
                                 this.mapData[this.currentLayer][worldY][worldX] = tileIndex;
+                                modified = true;
                             }
                         }
                     }
@@ -973,12 +960,16 @@ export class ReactiveMapEditor {
                     
                     if (isInMapBounds(tx, ty, this.getMapDimensions())) {
                         if (this.mapData[this.currentLayer][ty][tx] !== newTile) {
-                            this.hasModifiedDuringPaint = true;
                             this.mapData[this.currentLayer][ty][tx] = newTile;
+                            modified = true;
                         }
                     }
                 }
             }
+        }
+
+        if (modified && !this.hasModifiedDuringPaint) {
+            this.hasModifiedDuringPaint = true;
         }
     }
 
@@ -1043,9 +1034,10 @@ export class ReactiveMapEditor {
                 if (e.ctrlKey || e.metaKey) {
                     if (e.shiftKey) {
                         e.preventDefault();
-                        historyFSM.send('redo');
+                        this.redo();
                     } else {
-                        historyFSM.send('undo');
+                        e.preventDefault();
+                        this.undo();
                     }
                 } else {
                     e.preventDefault();
@@ -1077,7 +1069,7 @@ export class ReactiveMapEditor {
                 break;
             case 'v':
                 e.preventDefault();
-                viewFSM.send('toggleGrid');
+                this.showGrid = !this.showGrid;
                 break;
             case 'w':
                 e.preventDefault();
@@ -1216,8 +1208,10 @@ export class ReactiveMapEditor {
             }
         }
 
+        // Save current state to undo stack and apply new state
+        this.undoStack.push(cloneMapData(this.mapData));
         this.mapData = newMap;
-        historyFSM.send('saveState', cloneMapData(this.mapData));
+        this.redoStack = [];
         this.centerMap();
     }
 
@@ -1226,9 +1220,12 @@ export class ReactiveMapEditor {
             throw new Error('Map dimensions must be positive numbers');
         }
 
+        // Save current state to undo stack
+        this.undoStack.push(cloneMapData(this.mapData));
+        
+        // Create and apply new map
         this.mapData = createEmptyMap(width, height, this.MAX_LAYERS);
-        historyFSM.send('clear');
-        historyFSM.send('saveState', cloneMapData(this.mapData));
+        this.redoStack = [];
         this.centerMap();
     }
 
@@ -1285,8 +1282,12 @@ export class ReactiveMapEditor {
             }
             this.mapData = unpackedData.slice(0, this.MAX_LAYERS);
 
-            historyFSM.send('clear');
-            historyFSM.send('saveState', cloneMapData(this.mapData));
+            // Save current state to undo stack
+            this.undoStack.push(cloneMapData(this.mapData));
+            
+            // Apply new map data
+            this.mapData = unpackedData.slice(0, this.MAX_LAYERS);
+            this.redoStack = [];
             this.centerMap();
         } catch (error) {
             console.error('Failed to unpack map data:', error);
@@ -1413,10 +1414,37 @@ export class ReactiveMapEditor {
 
     // Layer operations
     swapLayers(layerA: number, layerB: number) {
+        // Save current state to undo stack
+        this.undoStack.push(cloneMapData(this.mapData));
+        
         // Swap layer data
         [this.mapData[layerA], this.mapData[layerB]] = [this.mapData[layerB], this.mapData[layerA]];
-        // Save state after swap
-        historyFSM.send('saveState', cloneMapData(this.mapData));
+        
+        // Clear redo stack since we made a new change
+        this.redoStack = [];
+    }
+
+    // Undo/Redo methods
+    undo() {
+        if (this.undoStack.length > 0) {
+            // Save current state to redo stack
+            this.redoStack.push(cloneMapData(this.mapData));
+            
+            // Pop and apply the last state from undo stack
+            const previousState = this.undoStack.pop()!;
+            this.mapData = cloneMapData(previousState);
+        }
+    }
+
+    redo() {
+        if (this.redoStack.length > 0) {
+            // Save current state to undo stack
+            this.undoStack.push(cloneMapData(this.mapData));
+            
+            // Pop and apply the last state from redo stack
+            const nextState = this.redoStack.pop()!;
+            this.mapData = cloneMapData(nextState);
+        }
     }
 }
 

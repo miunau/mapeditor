@@ -87,8 +87,11 @@ export function calculateMapCenter(
     tileWidth: number,
     tileHeight: number
 ): Point {
+    const mapWidthPx = mapWidth * tileWidth;
+    const mapHeightPx = mapHeight * tileHeight;
+    
     return {
-        x: (canvasWidth - mapWidth * tileWidth) / 2,
-        y: (canvasHeight - mapHeight * tileHeight) / 2
+        x: (canvasWidth - mapWidthPx) / 2,
+        y: (canvasHeight - mapHeightPx) / 2
     };
 } 

@@ -51,16 +51,11 @@ export function calculateZoomTransform(
     focusPoint: Point,
     offset: Point
 ): { zoom: number; offset: Point } {
-    // Calculate world position before zoom
-    const worldX = (focusPoint.x - offset.x) / currentZoom;
-    const worldY = (focusPoint.y - offset.y) / currentZoom;
-
-    // Calculate new offset to keep the focus point fixed
     return {
         zoom: newZoom,
         offset: {
-            x: focusPoint.x - worldX * newZoom,
-            y: focusPoint.y - worldY * newZoom
+            x: focusPoint.x - (focusPoint.x - offset.x) * (newZoom / currentZoom),
+            y: focusPoint.y - (focusPoint.y - offset.y) * (newZoom / currentZoom)
         }
     };
 }

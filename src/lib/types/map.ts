@@ -1,5 +1,5 @@
 export type LayerData = number[][];
-export type MapData = LayerData[];
+export type MapData = number[][][];
 
 export interface MapDimensions {
     width: number;
@@ -44,19 +44,32 @@ export interface CustomBrush {
 
 // Create an empty map with given dimensions
 export function createEmptyMap(width: number, height: number, layers: number): MapData {
-    return Array(layers).fill(0).map(() => 
-        Array(height).fill(0).map(() => Array(width).fill(-1))
-    );
+    return Array(layers).fill(null)
+        .map(() => Array(height).fill(null)
+            .map(() => Array(width).fill(-1)));
 }
 
-// Deep clone map data
+// Fast clone using TypedArrays for better performance
 export function cloneMapData(mapData: MapData): MapData {
-    return mapData.map(layer => layer.map(row => [...row]));
+    const layers = mapData.length;
+    const height = mapData[0].length;
+    const width = mapData[0][0].length;
+    const totalSize = width * height;
+    
+    return mapData.map(layer => {
+        const flatArray = new Int32Array(totalSize);
+        layer.forEach((row, y) => {
+            flatArray.set(row, y * width);
+        });
+        const clonedArray = new Int32Array(flatArray);
+        return Array(height).fill(null)
+            .map((_, y) => Array.from(clonedArray.subarray(y * width, (y + 1) * width)));
+    });
 }
 
 // Validate map dimensions
 export function validateMapDimensions(width: number, height: number): boolean {
-    return width > 0 && height > 0 && width <= 1000 && height <= 1000;
+    return width > 0 && height > 0 && Number.isInteger(width) && Number.isInteger(height);
 }
 
 // Get map dimensions from map data
