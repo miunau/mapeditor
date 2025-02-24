@@ -1,11 +1,10 @@
 <script lang="ts">
-    import "./style.css";
     import "./98.css";
+    import "./style.css";
     import { ReactiveMapEditor } from "$lib/MapEditor.svelte";
     import { base } from "$app/paths";
-    import { drawTile } from "$lib/drawTile";
     import Toolbar from "../components/Toolbar.svelte";
-    import LayerControls from "../components/LayerControls.svelte";
+    import LayerDialog from "../components/dialogs/LayerDialog.svelte";
     import { onDestroy } from "svelte";
     import NewMapDialog from "../components/dialogs/NewMapDialog.svelte";
     import ResizeDialog from "../components/dialogs/ResizeDialog.svelte";
@@ -15,7 +14,7 @@
     import ShortcutsDialog from "../components/dialogs/ShortcutsDialog.svelte";
     import CustomBrushDialog from "../components/dialogs/CustomBrushDialog.svelte";
     import { editorStore } from "$lib/state/EditorStore.svelte";
-  import MainMenu from "../components/MainMenu.svelte";
+    import MainMenu from "../components/MainMenu.svelte";
 
     let editorCanvas: HTMLCanvasElement | undefined = $state();
     let editor: ReactiveMapEditor | undefined = $state();
@@ -131,7 +130,7 @@
 
 <div class="window">
     <div class="title-bar">
-        <div class="title-bar-text">miunau's map editor</div>
+        <div class="title-bar-text">Miunau's Map Editor 2000</div>
     </div>
     <div class="main-menu"> 
         <MainMenu />
@@ -139,7 +138,7 @@
     <div class="window-body">
         {#if editor}
             <Toolbar />
-            <LayerControls />
+            <LayerDialog />
             <NewMapDialog />
             <ResizeDialog />
             <TilemapSettingsDialog />
@@ -153,9 +152,8 @@
         </div>
     </div>
     <div class="status-bar">
-        <p class="status-bar-field">Press F1 for help</p>
-        <p class="status-bar-field">Slide 1</p>
-        <p class="status-bar-field">CPU Usage: 14%</p>
+        <p class="status-bar-field">Selected tile: {editorStore.selectedTile}</p>
+        <p class="status-bar-field">Brush size: {editorStore.brushSize}</p>
     </div>
 </div>
 
@@ -172,8 +170,11 @@
         min-height: 0;
     }
     .status-bar {
-        height: 100%;
-        min-height: 0;
+        padding: 0 8px 8px 8px;
+    }
+    .status-bar-field {
+        padding: 6px;
+        font-weight: bold;
     }
     .editor-container {
         flex: 1;

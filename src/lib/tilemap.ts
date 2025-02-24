@@ -118,4 +118,22 @@ export class Tilemap {
     getImage(): HTMLImageElement | null {
         return this.image;
     }
+
+    // Get the tilemap image data as base64
+    getImageData(): string {
+        if (!this.image) {
+            return '';
+        }
+        // Create a canvas to draw the image
+        const canvas = document.createElement('canvas');
+        canvas.width = this.image.width;
+        canvas.height = this.image.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+            return '';
+        }
+        // Draw the image and get its data URL
+        ctx.drawImage(this.image, 0, 0);
+        return canvas.toDataURL('image/png');
+    }
 }

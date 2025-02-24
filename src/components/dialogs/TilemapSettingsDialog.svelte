@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte';
-  import Dialog from './Dialog.svelte';
+    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
+    import Dialog from './Dialog.svelte';
 
     let fileInput: HTMLInputElement;
     let settings = $state({

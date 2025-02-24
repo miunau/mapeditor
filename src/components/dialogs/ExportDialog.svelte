@@ -1,5 +1,10 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte';
+    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
+  import IconButton from '../IconButton.svelte';
+  import IconCopy from '../icons/IconCopy.svelte';
+  import IconExport from '../icons/IconExport.svelte';
+  import IconSave from '../icons/IconSave.svelte';
+    import Dialog from './Dialog.svelte';
 
     let activeTab = $state<'export' | 'docs'>('export');
     let useCompression = $state(true);
@@ -29,6 +34,11 @@
         URL.revokeObjectURL(url);
     }
 
+    function closeDialog() {
+        editorStore.setShowExportDialog(false);
+        exportedData = '';
+    }
+
     async function copyToClipboard() {
         try {
             await navigator.clipboard.writeText(exportedData);
@@ -40,93 +50,97 @@
     }
 </script>
 
-<div class="dialog" class:show={editorStore.showExportDialog}>
-    <h3>Export Map</h3>
+<Dialog title="Export Map" show={editorStore.showExportDialog} onClose={closeDialog}>
+    {#snippet buttonArea()}
+        <button onclick={closeDialog}>
+            Close
+        </button>
+    {/snippet}
     <div class="dialog-content">
-        <div class="tab-buttons">
-            <button 
-                class:active={activeTab === 'export'}
-                onclick={() => activeTab = 'export'}
-            >
-                Export
-            </button>
-            <button 
-                class:active={activeTab === 'docs'}
-                onclick={() => activeTab = 'docs'}
-            >
-                Documentation
-            </button>
-        </div>
+        <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
+        <menu role="tablist">
+            <li role="tab" aria-selected={activeTab === 'export'}>
+                <a href="#" onclick={(e) => { e.preventDefault(); activeTab = 'export'; }}>Export</a>
+            </li>
+            <li role="tab" aria-selected={activeTab === 'docs'}>
+                <a href="#" onclick={(e) => { e.preventDefault(); activeTab = 'docs'; }}>Documentation</a>
+            </li>
+        </menu>
 
-        {#if activeTab === 'export'}
-            <div class="export-options">
-                <label class="checkbox-label">
-                    <input 
-                        type="checkbox" 
-                        bind:checked={useCompression}
-                        onchange={exportMap}
-                    >
-                    Use compression
-                    <span class="help-text">
-                        {useCompression ? 
-                            '(Binary format, smaller file size)' : 
-                            '(JSON format, human readable)'}
-                    </span>
-                </label>
-                <label class="checkbox-label">
-                    <input 
-                        type="checkbox" 
-                        bind:checked={includeCustomBrushes}
-                        onchange={exportMap}
-                    >
-                    Include custom brushes
-                    <span class="help-text">
-                        (Export custom brush patterns with the map)
-                    </span>
-                </label>
-            </div>
-            <div class="export-buttons">
-                <button onclick={downloadJson} class="primary-button">
-                    💾 Download JSON
-                </button>
-                <button onclick={copyToClipboard}>
-                    🔗 Copy to Clipboard
-                </button>
-            </div>
-            <div class="separator">
-                <span>or copy from here</span>
-            </div>
-            <textarea 
-                value={exportedData}
-                placeholder="Map data will appear here..."
-                rows="10"
-                readonly
-            ></textarea>
-        {:else}
-            <div class="documentation">
-                <h4>Map Data Format</h4>
-                <p>The map data can be stored in two formats:</p>
+        <div class="window" role="tabpanel">
+            <div class="window-body">
+                {#if activeTab === 'export'}
+                    <div class="export-options">
+                        <p><strong>Export Options</strong></p>
+                        <input 
+                            type="checkbox" 
+                            bind:checked={useCompression}
+                            onchange={exportMap}
+                            id="use-compression"
+                        >
+                        <label for="use-compression" class="checkbox-label">
+                            Use compression
+                            <span class="help-text">
+                                {useCompression ? 
+                                    '(Binary format, smaller file size)' : 
+                                    '(JSON format, human readable)'}
+                            </span>
+                        </label>
+                        <input 
+                            type="checkbox" 
+                            bind:checked={includeCustomBrushes}
+                            onchange={exportMap}
+                            id="include-custom-brushes"
+                        >
+                        <label for="include-custom-brushes" class="checkbox-label">
+                            Include custom brushes
+                            <span class="help-text">
+                                (Export custom brush patterns with the map)
+                            </span>
+                        </label>
+                    </div>
+                    <div class="export-buttons">
+                        <IconButton title="Download JSON" Icon={IconSave} onclick={downloadJson}>
+                            Download JSON
+                        </IconButton>
+                        <IconButton title="Copy to Clipboard" Icon={IconCopy} onclick={copyToClipboard}>
+                            Copy to Clipboard
+                        </IconButton>
+                    </div>
+                    <div class="separator">
+                        <span>or copy from here</span>
+                    </div>
+                    <textarea 
+                        value={exportedData}
+                        placeholder="Map data will appear here..."
+                        rows="10"
+                        readonly
+                    ></textarea>
+                {:else}
+                    <div class="documentation">
+                        <h4>Map Data Format</h4>
+                        <p>The map data can be stored in two formats:</p>
 
-                <h5>Compressed Format (Binary)</h5>
-                <p>A compressed binary format, encoded as base64, structured as follows:</p>
-                <ul>
-                    <li>Header (4 bytes):
+                        <h5>Compressed Format (Binary)</h5>
+                        <p>A compressed binary format, encoded as base64, structured as follows:</p>
                         <ul>
-                            <li>Width (2 bytes): Map width in tiles</li>
-                            <li>Height (2 bytes): Map height in tiles</li>
+                            <li>Header (4 bytes):
+                                <ul>
+                                    <li>Width (2 bytes): Map width in tiles</li>
+                                    <li>Height (2 bytes): Map height in tiles</li>
+                                </ul>
+                            </li>
+                            <li>Layer Data (series of runs):
+                                <ul>
+                                    <li>Count (2 bytes): Number of times to repeat the value</li>
+                                    <li>Value (2 bytes): The tile index (-1 for empty)</li>
+                                </ul>
+                            </li>
                         </ul>
-                    </li>
-                    <li>Layer Data (series of runs):
-                        <ul>
-                            <li>Count (2 bytes): Number of times to repeat the value</li>
-                            <li>Value (2 bytes): The tile index (-1 for empty)</li>
-                        </ul>
-                    </li>
-                </ul>
 
-                <h5>Uncompressed Format (JSON)</h5>
-                <p>A standard JSON format with the following structure:</p>
-                <pre><code>{`{
+                        <h5>Uncompressed Format (JSON)</h5>
+                        <p>A standard JSON format with the following structure:</p>
+                        <pre><code>{`{
     "version": 1,
     "format": "json",
     "mapData": {
@@ -150,124 +164,41 @@
         }
     ]
 }`}</code></pre>
+                    </div>
+                {/if}
             </div>
-        {/if}
-
-        <div class="dialog-buttons">
-            <button onclick={() => {
-                editorStore.setShowExportDialog(false);
-                exportedData = '';
-            }}>Close</button>
         </div>
     </div>
-</div>
+</Dialog>
 
 <style>
-    .dialog {
-        display: none;
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.9);
-        padding: 20px;
-        border-radius: 8px;
-        border: 1px solid #555;
-        color: white;
-        z-index: 1000;
-    }
-
-    .dialog.show {
-        display: block;
-    }
-
-    h3 {
-        margin: 0 0 15px 0;
-        font-size: 18px;
-    }
-
     .dialog-content {
         display: flex;
         flex-direction: column;
-        gap: 15px;
-        width: 600px;
         max-height: 80vh;
+        width: 400px;
         overflow-y: auto;
     }
 
-    .tab-buttons {
-        display: flex;
-        gap: 1px;
-        margin-bottom: 15px;
-        background: #444;
-        padding: 2px;
-        border-radius: 4px;
-    }
-
-    .tab-buttons button {
-        flex: 1;
-        background: #555;
-        border: none;
-        padding: 8px 16px;
-        color: #ccc;
-        border-radius: 3px;
-    }
-
-    .tab-buttons button:hover {
-        background: #666;
-    }
-
-    .tab-buttons button.active {
-        background: #2a6;
-        color: white;
-    }
-
     .export-options {
-        margin-bottom: 15px;
+        display: block;
     }
 
     .checkbox-label {
         display: flex;
         align-items: center;
         gap: 0.5rem;
-        margin-bottom: 1rem;
-        color: #eee;
+        margin-bottom: 10px;
     }
-
-    .checkbox-label input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
-        margin: 0;
-    }
-
     .help-text {
-        color: #999;
-        font-size: 0.9em;
+        color: #555;
         margin-left: 0.25rem;
     }
 
     .export-buttons {
-        display: flex;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
         gap: 10px;
-        margin-bottom: 10px;
-    }
-
-    .export-buttons button {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        height: 36px;
-    }
-
-    .primary-button {
-        background: #2a6;
-        border-color: #3b7;
-    }
-
-    .primary-button:hover {
-        background: #3b7;
     }
 
     .separator {
@@ -275,7 +206,6 @@
         align-items: center;
         text-align: center;
         margin: 15px 0;
-        color: #888;
     }
 
     .separator::before,
@@ -287,41 +217,21 @@
 
     .separator span {
         padding: 0 10px;
-        font-size: 14px;
     }
 
     textarea {
         width: 100%;
         min-height: 200px;
-        padding: 8px;
-        background: #444;
-        border: 1px solid #555;
-        border-radius: 4px;
-        color: white;
         font-family: monospace;
         resize: vertical;
     }
 
-    textarea[readonly] {
-        background: #333;
-        cursor: text;
-    }
-
-    .documentation {
-        color: #eee;
-        font-size: 14px;
-        line-height: 1.5;
-    }
-
     .documentation h4 {
         margin: 0 0 15px 0;
-        font-size: 16px;
     }
 
     .documentation h5 {
         margin: 15px 0 8px 0;
-        font-size: 14px;
-        color: #2a6;
     }
 
     .documentation p {
@@ -338,38 +248,9 @@
     }
 
     .documentation pre {
-        background: #333;
         padding: 12px;
         border-radius: 4px;
         overflow-x: auto;
         margin: 12px 0;
-    }
-
-    .documentation code {
-        font-family: monospace;
-        font-size: 13px;
-        line-height: 1.4;
-        white-space: pre-wrap;
-    }
-
-    .dialog-buttons {
-        display: flex;
-        justify-content: flex-end;
-        gap: 10px;
-        margin-top: 10px;
-    }
-
-    button {
-        min-width: 80px;
-        padding: 8px 16px;
-        background: #555;
-        border: 1px solid #666;
-        border-radius: 4px;
-        color: white;
-        cursor: pointer;
-    }
-
-    button:hover {
-        background: #666;
     }
 </style> 

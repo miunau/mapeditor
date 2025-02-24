@@ -14,8 +14,9 @@ let showResizeDialog = $state(false);
 let showTilemapDialog = $state(false);
 let showImportDialog = $state(false);
 let showExportDialog = $state(false);
-let showShortcuts = $state(false);
+let showShortcuts = $state(true);
 let showCustomBrushDialog = $state(false);
+let showLayerDialog = $state(false);
 let customBrushDialogId: string | null = $state(null);
 
 // Reactive store for the editor state
@@ -34,6 +35,7 @@ export const editorStore = {
     get showExportDialog() { return showExportDialog; },
     get showShortcuts() { return showShortcuts; },
     get showCustomBrushDialog() { return showCustomBrushDialog; },
+    get showLayerDialog() { return showLayerDialog; },
     get customBrushDialogId() { return customBrushDialogId; },
     setShowNewMapDialog(show: boolean) { showNewMapDialog = show; },
     setShowResizeDialog(show: boolean) { showResizeDialog = show; },
@@ -41,6 +43,7 @@ export const editorStore = {
     setShowImportDialog(show: boolean) { showImportDialog = show; },
     setShowExportDialog(show: boolean) { showExportDialog = show; },
     setShowShortcuts(show: boolean) { showShortcuts = show; },
+    setShowLayerDialog(show: boolean) { showLayerDialog = show; },
     setShowCustomBrushDialog(show: boolean) { 
         showCustomBrushDialog = show;
         if (!show) customBrushDialogId = null;

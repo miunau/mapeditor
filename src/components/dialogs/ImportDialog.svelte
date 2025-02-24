@@ -1,5 +1,6 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte';
+    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
+    import Dialog from './Dialog.svelte';
 
     let mapData = $state('');
 
@@ -10,8 +11,7 @@
                 // Check for version and required fields
                 if (typeof data === 'object' && data.version === 1 && data.mapData && data.tilemap) {
                     editorStore.editor.importMap(data);
-                    editorStore.setShowImportDialog(false);
-                    mapData = '';  // Clear the textarea after successful import
+                    closeDialog();
                 } else {
                     throw new Error('Incompatible map data version');
                 }
@@ -20,6 +20,11 @@
                 alert('Invalid or incompatible map data format');
             }
         }
+    }
+
+    function closeDialog() {
+        editorStore.setShowImportDialog(false);
+        mapData = '';  // Clear textarea when closing
     }
 
     async function handleFileSelect(e: Event) {
@@ -38,8 +43,12 @@
     }
 </script>
 
-<div class="dialog" class:show={editorStore.showImportDialog}>
-    <h3>Import Map</h3>
+<Dialog title="Import Map" show={editorStore.showImportDialog} onClose={closeDialog}>
+    {#snippet buttonArea()}
+        <button onclick={importMap}>Import</button>
+        <button onclick={closeDialog}>Cancel</button>
+    {/snippet}
+
     <div class="dialog-content">
         <div class="file-input">
             <label>
@@ -59,49 +68,15 @@
             placeholder="Paste map data JSON here..."
             rows="10"
         ></textarea>
-        <div class="dialog-buttons">
-            <button onclick={importMap}>Import</button>
-            <button onclick={() => {
-                editorStore.setShowImportDialog(false);
-                mapData = '';  // Clear textarea when closing
-            }}>Cancel</button>
-        </div>
     </div>
-</div>
+</Dialog>
 
 <style>
-    .dialog {
-        display: none;
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.9);
-        padding: 20px;
-        border-radius: 8px;
-        border: 1px solid #555;
-        color: white;
-        z-index: 1000;
-    }
-
-    .dialog.show {
-        display: block;
-    }
-
-    h3 {
-        margin: 0 0 15px 0;
-        font-size: 18px;
-    }
-
     .dialog-content {
         display: flex;
         flex-direction: column;
         gap: 15px;
         width: 500px;
-    }
-
-    .file-input {
-        margin-bottom: 10px;
     }
 
     .file-input label {
@@ -110,36 +85,10 @@
         gap: 5px;
     }
 
-    .file-input input[type="file"] {
-        background: #444;
-        border: 1px solid #555;
-        border-radius: 4px;
-        color: white;
-        padding: 5px;
-        cursor: pointer;
-        width: 100%;
-    }
-
-    .file-input input[type="file"]::-webkit-file-upload-button {
-        background: #666;
-        border: none;
-        border-radius: 4px;
-        color: white;
-        padding: 8px 16px;
-        margin-right: 10px;
-        cursor: pointer;
-    }
-
-    .file-input input[type="file"]::-webkit-file-upload-button:hover {
-        background: #777;
-    }
-
     .separator {
         display: flex;
         align-items: center;
         text-align: center;
-        margin: 15px 0;
-        color: #888;
     }
 
     .separator::before,
@@ -152,38 +101,5 @@
     .separator span {
         padding: 0 10px;
         font-size: 14px;
-    }
-
-    textarea {
-        width: 100%;
-        min-height: 200px;
-        padding: 8px;
-        background: #444;
-        border: 1px solid #555;
-        border-radius: 4px;
-        color: white;
-        font-family: monospace;
-        resize: vertical;
-    }
-
-    .dialog-buttons {
-        display: flex;
-        justify-content: flex-end;
-        gap: 10px;
-        margin-top: 10px;
-    }
-
-    button {
-        min-width: 80px;
-        padding: 8px 16px;
-        background: #555;
-        border: 1px solid #666;
-        border-radius: 4px;
-        color: white;
-        cursor: pointer;
-    }
-
-    button:hover {
-        background: #666;
     }
 </style> 

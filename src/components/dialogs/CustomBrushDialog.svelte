@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte';
+    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
     import { drawTile } from '../../lib/drawTile';
 
     let name: string | null = $state('');

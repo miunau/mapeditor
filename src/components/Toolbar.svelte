@@ -1,21 +1,22 @@
 <script lang="ts">
     import { editorStore } from '../lib/state/EditorStore.svelte';
+    import { layerFSM } from '../lib/state/LayerState.svelte';
     import { calculateZoomTransform, findClosestZoomLevel } from '../lib/utils/zoom';
     import type { ZoomLevel } from '../lib/utils/zoom';
-  import IconButton from './IconButton.svelte';
-  import IconAdjustment from './icons/IconAdjustment.svelte';
-  import IconBrush from './icons/IconBrush.svelte';
-  import IconExport from './icons/IconExport.svelte';
-  import IconGrid from './icons/IconGrid.svelte';
-  import IconImport from './icons/IconImport.svelte';
-  import IconInfo from './icons/IconInfo.svelte';
-  import IconLayer from './icons/IconLayer.svelte';
-  import IconNewFile from './icons/IconNewFile.svelte';
-  import IconPaintBucket from './icons/IconPaintBucket.svelte';
-  import IconRectangle from './icons/IconRectangle.svelte';
-  import IconResize from './icons/IconResize.svelte';
-  import IconZoomIn from './icons/IconZoomIn.svelte';
-  import IconZoomOut from './icons/IconZoomOut.svelte';
+    import IconButton from './IconButton.svelte';
+    import IconAdjustment from './icons/IconAdjustment.svelte';
+    import IconBrush from './icons/IconBrush.svelte';
+    import IconExport from './icons/IconExport.svelte';
+    import IconGrid from './icons/IconGrid.svelte';
+    import IconImport from './icons/IconImport.svelte';
+    import IconInfo from './icons/IconInfo.svelte';
+    import IconLayer from './icons/IconLayer.svelte';
+    import IconNewFile from './icons/IconNewFile.svelte';
+    import IconPaintBucket from './icons/IconPaintBucket.svelte';
+    import IconRectangle from './icons/IconRectangle.svelte';
+    import IconResize from './icons/IconResize.svelte';
+    import IconZoomIn from './icons/IconZoomIn.svelte';
+    import IconZoomOut from './icons/IconZoomOut.svelte';
 
     function resetZoom() {
         const rect = editorStore.canvas?.getBoundingClientRect();
@@ -48,104 +49,114 @@
 
         editorStore.setZoom(newZoom, newOffset);
     }
+
+    let audio: HTMLAudioElement | null = $state(null);
+
+    function playClickSound(fn: () => void) {
+        if (audio) {
+            audio.play();
+        }
+        fn();
+    }
 </script>
 
 {#if editorStore.editor}
 <div class="controls">
-    <IconButton Icon={IconNewFile} title="Create new map" onclick={() => editorStore.setShowNewMapDialog(true)}>
-        New map
-    </IconButton>
-    <IconButton Icon={IconResize} title="Resize current map" onclick={() => editorStore.setShowResizeDialog(true)}>
-        Resize
-    </IconButton>
-    <IconButton Icon={IconAdjustment} title="Change tilemap settings" onclick={() => editorStore.setShowTilemapDialog(true)}>
-        Tilemap
-    </IconButton>
-    <IconButton Icon={IconGrid} title="Toggle grid (V)" onclick={() => editorStore.editor?.toggleGrid()} active={editorStore.showGrid}>
+    <audio src="/START.mp3" bind:this={audio}></audio>
+    <IconButton Icon={IconGrid} title="Toggle grid (V)" onclick={() => playClickSound(() => editorStore.editor?.toggleGrid())} active={editorStore.showGrid}>
         Grid (V)
     </IconButton>
-    <div class="layer-indicator">
+    <div class="brush-controls">
+        <div class="tool-buttons">
+            <IconButton Icon={IconBrush} title="Brush tool (B)" onclick={() => playClickSound(() => editorStore.selectTool('brush'))} active={editorStore.currentTool === 'brush'}>
+                Brush (B)
+            </IconButton>
+            <IconButton Icon={IconPaintBucket} title="Flood fill tool (G)" onclick={() => playClickSound(() => editorStore.selectTool('fill'))} active={editorStore.currentTool === 'fill'}>
+                Fill (G)
+            </IconButton>
+            <IconButton Icon={IconRectangle} title="Rectangle tool (R)" onclick={() => playClickSound(() => editorStore.selectTool('rectangle'))} active={editorStore.currentTool === 'rectangle'}>
+                Rect (R)
+            </IconButton>
+        </div>
+    </div>
+    <div class="stack">
+        <span><IconBrush /> Size (Z/X)</span>
+        <div class="buttons">
+            <button 
+                onclick={() => playClickSound(() => editorStore.setBrushSize(editorStore.brushSize - 1))}
+                title="Decrease brush size (Z)"
+                class="small bold"
+            >-</button>
+            <span class="brush-size">{editorStore.brushSize}</span>
+            <button 
+                onclick={() => playClickSound(() => editorStore.setBrushSize(editorStore.brushSize + 1))}
+                title="Increase brush size (X)"
+                class="small bold"
+            >+</button>
+        </div>
+    </div>
+    <div class="stack">
         <span>
-            <IconLayer />
+            <IconLayer /> Layers (0-9)
+            <button class="small" onclick={() => playClickSound(() => editorStore.setShowLayerDialog(true))}>Edit..</button>
         </span>
-        <div class="layer-buttons">
+        <div class="buttons">
             <button 
                 class:active={editorStore.currentLayer === -1}
                 onclick={() => editorStore.selectLayer(-1)}
                 title="Show all layers (press §)"
-                class="all-layers"
+                class="small bold"
             >
                 All
             </button>
             {#each Array(9) as _, i}
                 <button 
                     class:active={editorStore.currentLayer === i}
-                    onclick={() => editorStore.selectLayer(i)}
+                    onclick={() => playClickSound(() => editorStore.selectLayer(i))}
+                    class="small"
                     title="Select layer {i + 1} (press {i + 1})"
+                    disabled={!layerFSM.context.layerVisibility[i]}
                 >
                     {i + 1}
                 </button>
             {/each}
             <button 
                 class:active={editorStore.currentLayer === 9}
-                onclick={() => editorStore.selectLayer(9)}
+                onclick={() => playClickSound(() => editorStore.selectLayer(9))}
                 title="Select layer 10 (press 0)"
+                class="small"
+                disabled={!layerFSM.context.layerVisibility[9]}
             >
                 10
             </button>
         </div>
     </div>
-    <div class="brush-controls">
-        <div class="tool-buttons">
-            <IconButton Icon={IconBrush} title="Brush tool (B)" onclick={() => editorStore.selectTool('brush')} active={editorStore.currentTool === 'brush'}>
-                Brush (B)
-            </IconButton>
-            <IconButton Icon={IconPaintBucket} title="Flood fill tool (G)" onclick={() => editorStore.selectTool('fill')} active={editorStore.currentTool === 'fill'}>
-                Fill (G)
-            </IconButton>
-            <IconButton Icon={IconRectangle} title="Rectangle tool (R)" onclick={() => editorStore.selectTool('rectangle')} active={editorStore.currentTool === 'rectangle'}>
-                Rect (R)
-            </IconButton>
+    <div class="stack">
+        <span>
+            <IconZoomOut /> Zoom (Z/X)
+        </span>
+        <div class="buttons">
+            <button 
+                onclick={() => playClickSound(() => handleToolbarZoom('down'))}
+                title="Zoom out (-)"
+                class="small"
+            >
+                <IconZoomOut />
+            </button>
+            <button 
+                onclick={() => playClickSound(resetZoom)}
+                title="Reset zoom (Ctrl/Cmd + 0)"
+                class="zoom-reset"
+            >{Math.round(editorStore.zoomLevel * 100)}%</button>
+            <button 
+                onclick={() => playClickSound(() => handleToolbarZoom('up'))}
+                title="Zoom in (+)"
+                class="small"
+            >
+                <IconZoomIn />
+            </button>
         </div>
-        <span>📏 </span>
-        <button 
-            onclick={() => editorStore.setBrushSize(editorStore.brushSize - 1)}
-            title="Decrease brush size (Z)"
-        >-</button>
-        <span class="brush-size">{editorStore.brushSize}</span>
-        <button 
-            onclick={() => editorStore.setBrushSize(editorStore.brushSize + 1)}
-            title="Increase brush size (X)"
-        >+</button>
     </div>
-    <div class="zoom-controls">
-        <button 
-            onclick={() => handleToolbarZoom('down')}
-            title="Zoom out (-)"
-        >
-            <IconZoomOut />
-        </button>
-        <button 
-            onclick={resetZoom}
-            title="Reset zoom (Ctrl/Cmd + 0)"
-            class="zoom-reset"
-        >{Math.round(editorStore.zoomLevel * 100)}%</button>
-        <button 
-            onclick={() => handleToolbarZoom('up')}
-            title="Zoom in (+)"
-        >
-            <IconZoomIn />
-        </button>
-    </div>
-    <button onclick={() => editorStore.setShowExportDialog(true)} title="Export map (Ctrl/Cmd + E)">
-        <IconExport />
-    </button>
-    <button onclick={() => editorStore.setShowImportDialog(true)} title="Import map (Ctrl/Cmd + I)">
-        <IconImport />
-    </button>
-    <button onclick={() => editorStore.setShowShortcuts(!editorStore.showShortcuts)} title="Ctrl/Cmd + H or ?">
-        <IconInfo />
-    </button>
 </div>
 {/if}
 
@@ -163,31 +174,35 @@
         justify-content: center;
     }
 
-    .layer-indicator {
+    .stack {
         display: flex;
-        align-items: center;
-        gap: 8px;
+        flex-direction: column;
+        align-items: start;
+        justify-content: space-between;
+        height: 100%;
         padding: 0 8px;
     }
 
-    .layer-indicator span {
-        color: #fff;
-        font-size: 14px;
+    .stack span button {
+        padding: 0 6px;
+        line-height: 1;
+        min-height: 16px;
     }
 
-    .layer-buttons {
+    span {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: bold;
+    }
+
+    span.brush-size {
+        justify-content: center;
+    }
+
+    .buttons {
         display: flex;
         gap: 2px;
-    }
-
-    .layer-buttons button {
-        min-width: 24px;
-    }
-
-    .layer-buttons .all-layers {
-        width: auto;
-        min-width: 42px;
-        font-weight: bold;
     }
 
     .brush-controls {
@@ -204,20 +219,6 @@
         min-width: 20px;
         text-align: center;
         font-weight: bold;
-    }
-
-    .zoom-controls {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 4px 8px;
-    }
-
-    .zoom-controls .zoom-reset {
-        width: auto;
-        min-width: 60px;
-        font-size: 14px;
-        padding: 0 8px;
     }
 
 </style> 

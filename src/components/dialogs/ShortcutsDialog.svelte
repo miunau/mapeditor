@@ -1,126 +1,116 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte';
+    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
+    import Dialog from './Dialog.svelte';
+
+    function closeDialog() {
+        editorStore.setShowShortcuts(false);
+    }
+
+    let audio: HTMLAudioElement | null = $state(null);
+
+    $effect(() => {
+        if (audio && editorStore.showShortcuts) {
+            audio.play();
+        }
+    });
 </script>
 
-<div class="dialog" class:show={editorStore.showShortcuts}>
-    <h3>Hi!</h3>
-    <p>This is a tilemap based map editor by <a href="https://miunau.com" target="_blank">miunau</a>.</p>
-    <h3>Keyboard Shortcuts</h3>
-    <div class="dialog-content">
-        <ul>
-            <li><kbd>B</kbd> Brush tool</li>
-            <li><kbd>G</kbd> Flood fill tool</li>
-            <li><kbd>R</kbd> Rectangle tool</li>
-            <li><kbd>V</kbd> Toggle grid</li>
-            <li><kbd>§</kbd> Show all layers</li>
-            <li><kbd>1</kbd>-<kbd>9</kbd> Select layers 1-9, <kbd>0</kbd> Select layer 10</li>
-            <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Navigate tile selector</li>
-            <li><kbd>Space</kbd> or <kbd>R</kbd> Center map</li>
-            <li><kbd>Z</kbd><kbd>X</kbd> Adjust brush size</li>
-            <li><kbd>+</kbd><kbd>-</kbd> Zoom in/out</li>
-            <li><kbd>Ctrl/Cmd</kbd> + <kbd>0</kbd> Reset zoom</li>
-            <li><kbd>Ctrl/Cmd</kbd> + <kbd>Z</kbd> Undo</li>
-            <li><kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> Redo</li>
-            <li><kbd>Ctrl/Cmd</kbd> + <kbd>E</kbd> Export map</li>
-            <li><kbd>Ctrl/Cmd</kbd> + <kbd>I</kbd> Import map</li>
-            <li><kbd>Ctrl/Cmd</kbd> + <kbd>H</kbd> or <kbd>?</kbd> Toggle shortcuts</li>
-        </ul>
-        <div class="mouse-controls">
-            <h4>Mouse Controls</h4>
-            <ul>
-                <li><strong>Left Click/Drag</strong> Place selected tile on current layer</li>
-                <li><strong>Right Click/Drag</strong> Remove tiles on current layer</li>
-                <li><strong>Middle Click/Drag</strong> Pan view</li>
-                <li><strong>Click in palette</strong> Select tile</li>
-                <li><strong>Mouse Wheel</strong> Zoom in/out</li>
-            </ul>
+<Dialog title="Help" show={editorStore.showShortcuts} onClose={closeDialog}>
+    <audio src="/TADA.mp3" bind:this={audio}></audio>
+    {#snippet buttonArea()}
+        <div class="button-container">
+            <button class="close-button" onclick={closeDialog}>Close</button>
         </div>
-        <div class="dialog-buttons">
-            <button onclick={() => editorStore.setShowShortcuts(false)}>Close</button>
-        </div>
-    </div>
-</div>
+    {/snippet}
+    <img src="/miu.png" alt="miunau" class="miunau-logo">
+    <h4>Welcome!</h4>
+    <p>This is a tilemap based map editor by <a href="https://miunau.com" target="_blank">miunau</a>. Default tilemap is by <a href="https://kenney.nl" target="_blank">kenney</a>. Uses <a href="https://jdan.github.io/98.css/" target="_blank">98.css</a>. Thanks!</p>
+    <p>Select a tile from the palette, choose your tool, and start creating!<br>You can use layers to organize different elements of your map (e.g., background, terrain, objects).</p>
+    <hr />
+    <h4>Keyboard Shortcuts</h4>
+    <ul>
+        <li><strong>Tools</strong></li>
+        <li><kbd>B</kbd> <span>Brush tool</span></li>
+        <li><kbd>G</kbd> <span>Flood fill tool</span></li>
+        <li><kbd>R</kbd> <span>Rectangle tool</span></li>
+        <li><kbd>Z</kbd><kbd>X</kbd> <span>Adjust brush size</span></li>
+
+        <li><strong>Navigation</strong></li>
+        <li><kbd>Space</kbd> <span>Center map</span></li>
+        <li><kbd>+</kbd><kbd>-</kbd> <span>Zoom in/out</span></li>
+        <li><kbd>Ctrl/Cmd</kbd> + <kbd>0</kbd> <span>Reset zoom</span></li>
+        <li><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> <span>Navigate tile selector</span></li>
+
+        <li><strong>Layers</strong></li>
+        <li><kbd>1</kbd>-<kbd>9</kbd> <span>Select layers 1-9, <kbd>0</kbd> Select layer 10</span></li>
+        <li><kbd>§</kbd> <span>Show all layers</span></li>
+        <li><kbd>V</kbd> <span>Toggle grid</span></li>
+
+        <li><strong>History</strong></li>
+        <li><kbd>Ctrl/Cmd</kbd> + <kbd>Z</kbd> <span>Undo</span></li>
+        <li><kbd>Ctrl/Cmd</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> <span>Redo</span></li>
+
+        <li><strong>File Operations</strong></li>
+        <li><kbd>Ctrl/Cmd</kbd> + <kbd>E</kbd> <span>Export map</span></li>
+        <li><kbd>Ctrl/Cmd</kbd> + <kbd>I</kbd> <span>Import map</span></li>
+        <li><kbd>Ctrl/Cmd</kbd> + <kbd>H</kbd> or <kbd>?</kbd> <span>Toggle shortcuts</span></li>
+    </ul>
+    <hr />
+    <h4>Mouse Controls</h4>
+    <ul>
+        <li><kbd>Left Click/Drag</kbd> <span>Place selected tile on current layer</span></li>
+        <li><kbd>Right Click/Drag</kbd> <span>Remove tiles on current layer</span></li>
+        <li><kbd>Middle Click/Drag</kbd> <span>Pan view</span></li>
+        <li><kbd>Click in palette</kbd> <span>Select tile</span></li>
+        <li><kbd>Mouse Wheel</kbd> <span>Zoom in/out</span></li>
+    </ul>
+    <hr />
+</Dialog>
 
 <style>
-    .dialog {
-        display: none;
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.9);
-        padding: 20px;
-        border-radius: 8px;
-        border: 1px solid #555;
-        color: white;
-        z-index: 1000;
-    }
-    a {
-        color: #fff;
-    }
-    .dialog.show {
-        display: block;
-    }
-
-    h3 {
-        margin: 0 0 15px 0;
-        font-size: 18px;
-    }
-
-    h4 {
-        margin: 15px 0 5px 0;
-        font-size: 14px;
-    }
-
-    .dialog-content {
-        display: flex;
-        flex-direction: column;
-        gap: 15px;
-    }
-
     ul {
         list-style: none;
         padding: 0;
         margin: 0;
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 0px 24px;
+    }
+
+    img {
+        display: block;
+        width: 100%;
+        object-fit: cover;
+        max-height: 250px;
+        margin: 0 auto;
+        padding: 2px;
+        box-shadow: -1px -1px #0a0a0a, inset 1px 1px #fff, inset -2px -2px grey, inset 2px 2px #dfdfdf;
+    }
+
+    li:has(strong) {
+        grid-column: 1 / -1;
+        margin: 16px 0 10px 0;
+    }
+
+    li:has(strong):first-child {
+        margin-top: 6px;
     }
 
     li {
-        margin: 5px 0;
-        font-size: 14px;
+        margin: 1px 0;
+        font-weight: bold;
+        display: flex;
+        align-items: center;
+        gap: 8px;
     }
 
-    kbd {
-        background: #444;
-        border: 1px solid #666;
-        border-radius: 3px;
-        padding: 2px 5px;
-        font-family: monospace;
+    span {
+        padding: 0 3px;
+        font-weight: normal;
     }
 
-    .mouse-controls {
-        margin-top: 15px;
-        padding-top: 10px;
-        border-top: 1px solid #555;
-    }
-
-    .dialog-buttons {
+    .button-container {
         display: flex;
         justify-content: flex-end;
-        gap: 10px;
-        margin-top: 10px;
-    }
-
-    button {
-        min-width: 80px;
-        padding: 8px 16px;
-        background: #555;
-        border: 1px solid #666;
-        border-radius: 4px;
-        color: white;
-        cursor: pointer;
-    }
-
-    button:hover {
-        background: #666;
     }
 </style> 

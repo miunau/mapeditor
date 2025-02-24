@@ -271,7 +271,22 @@ export class ReactiveMapEditor {
         this.ctx.translate(Math.round(this.offsetX), Math.round(this.offsetY));
         this.ctx.scale(this.zoomLevel, this.zoomLevel);
 
-        // Draw each layer from bottom to top
+        // Calculate visible area in map coordinates (add a small buffer for smooth scrolling)
+        const viewportBounds = {
+            left: -this.offsetX / this.zoomLevel - this.tilemap.tileWidth,
+            top: -this.offsetY / this.zoomLevel - this.tilemap.tileHeight,
+            right: (this.canvas.width - this.offsetX) / this.zoomLevel + this.tilemap.tileWidth,
+            bottom: (this.canvas.height - this.offsetY) / this.zoomLevel + this.tilemap.tileHeight
+        };
+
+        // Convert to tile coordinates and clamp to map bounds
+        const dimensions = this.getMapDimensions();
+        const startTileX = Math.max(0, Math.floor(viewportBounds.left / this.tilemap.tileWidth));
+        const startTileY = Math.max(0, Math.floor(viewportBounds.top / this.tilemap.tileHeight));
+        const endTileX = Math.min(dimensions.width - 1, Math.ceil(viewportBounds.right / this.tilemap.tileWidth));
+        const endTileY = Math.min(dimensions.height - 1, Math.ceil(viewportBounds.bottom / this.tilemap.tileHeight));
+
+        // Draw each layer from bottom to top, but only for visible tiles
         for (let layer = 0; layer < this.MAX_LAYERS; layer++) {
             // Skip hidden layers
             if (!this.isLayerVisible(layer)) continue;
@@ -279,9 +294,8 @@ export class ReactiveMapEditor {
             // If showing all layers or this is the current layer, use full opacity
             this.ctx.globalAlpha = this.currentLayer === -1 || layer === this.currentLayer ? 1.0 : 0.3;
             
-            const dimensions = this.getMapDimensions();
-            for (let y = 0; y < dimensions.height; y++) {
-                for (let x = 0; x < dimensions.width; x++) {
+            for (let y = startTileY; y <= endTileY; y++) {
+                for (let x = startTileX; x <= endTileX; x++) {
                     const tileIndex = this.mapData[layer][y][x];
                     if (tileIndex === -1) continue; // Skip empty tiles
                     
@@ -560,8 +574,8 @@ export class ReactiveMapEditor {
                     height + 4
                 );
 
-                // Draw green highlight on top
-                this.ctx.strokeStyle = '#00ff00';
+                // Draw yellow highlight on top
+                this.ctx.strokeStyle = '#ffff00';
                 this.ctx.lineWidth = 2;
                 this.ctx.strokeRect(
                     startX - 2,
@@ -584,8 +598,8 @@ export class ReactiveMapEditor {
                     this.tilemap.tileHeight + 4
                 );
 
-                // Draw green highlight on top
-                this.ctx.strokeStyle = '#00ff00';
+                // Draw yellow highlight on top
+                this.ctx.strokeStyle = '#ffff00';
                 this.ctx.lineWidth = 2;
                 this.ctx.strokeRect(
                     selectedX - 2,
@@ -662,7 +676,7 @@ export class ReactiveMapEditor {
                         height + 4
                     );
 
-                    this.ctx.strokeStyle = '#00ff00';
+                    this.ctx.strokeStyle = '#ffff00';
                     this.ctx.lineWidth = 2;
                     this.ctx.strokeRect(
                         paletteX - 2,
@@ -1272,7 +1286,8 @@ export class ReactiveMapEditor {
         if (/^[0-9]$/.test(e.key)) {
             e.preventDefault();
             const layer = e.key === '0' ? 9 : parseInt(e.key) - 1;
-            if (layer >= 0 && layer < this.MAX_LAYERS) {
+            // Only select layer if it's visible
+            if (layer >= 0 && layer < this.MAX_LAYERS && layerFSM.context.layerVisibility[layer]) {
                 this.currentLayer = layer;
             }
             return;
@@ -1335,7 +1350,24 @@ export class ReactiveMapEditor {
                 if (!this.isCustomBrushMode) {
                     const selectedTile = toolFSM.context.selectedTile;
                     if (selectedTile >= this.tilemap.width) {
+                        // Move up in tilemap
                         toolFSM.send('selectTile', selectedTile - this.tilemap.width);
+                    } else if (this.customBrushes.length > 0) {
+                        // Move to the last custom brush when at the top of tilemap
+                        this.selectCustomBrush(this.customBrushes[this.customBrushes.length - 1].id);
+                    }
+                } else {
+                    // Find current brush index
+                    const currentIndex = this.customBrushes.findIndex(b => b.id === this.selectedCustomBrush?.id);
+                    if (currentIndex > 0) {
+                        // Move up in custom brushes
+                        this.selectCustomBrush(this.customBrushes[currentIndex - 1].id);
+                    } else if (currentIndex === 0) {
+                        // Move to tilemap when at the top of custom brushes
+                        this.selectCustomBrush(null);
+                        const lastRow = Math.floor((this.tilemap.width * this.tilemap.height - 1) / this.tilemap.width);
+                        const lastRowFirstTile = lastRow * this.tilemap.width;
+                        toolFSM.send('selectTile', lastRowFirstTile);
                     }
                 }
                 break;
@@ -1344,7 +1376,18 @@ export class ReactiveMapEditor {
                 if (!this.isCustomBrushMode) {
                     const selectedTile = toolFSM.context.selectedTile;
                     if (selectedTile < (this.tilemap.width * (this.tilemap.height - 1))) {
+                        // Move down in tilemap
                         toolFSM.send('selectTile', selectedTile + this.tilemap.width);
+                    } else if (this.customBrushes.length > 0) {
+                        // Move to first custom brush when at bottom of tilemap
+                        this.selectCustomBrush(this.customBrushes[0].id);
+                    }
+                } else {
+                    // Find current brush index
+                    const currentIndex = this.customBrushes.findIndex(b => b.id === this.selectedCustomBrush?.id);
+                    if (currentIndex < this.customBrushes.length - 1) {
+                        // Move down in custom brushes
+                        this.selectCustomBrush(this.customBrushes[currentIndex + 1].id);
                     }
                 }
                 break;
@@ -1368,7 +1411,16 @@ export class ReactiveMapEditor {
                 break;
             case 'escape':
                 e.preventDefault();
-                this.cancelRectangleDrawing();
+                if (this.isSelectingTiles) {
+                    // Cancel tile selection
+                    this.isSelectingTiles = false;
+                    this.selectionStartX = null;
+                    this.selectionStartY = null;
+                    this.selectionEndX = null;
+                    this.selectionEndY = null;
+                } else {
+                    this.cancelRectangleDrawing();
+                }
                 break;
         }
     }
@@ -1499,7 +1551,8 @@ export class ReactiveMapEditor {
             {
                 tileWidth: this.tileWidth,
                 tileHeight: this.tileHeight,
-                spacing: this.tileSpacing
+                spacing: this.tileSpacing,
+                imageData: this.tilemap.getImageData()
             },
             includeCustomBrushes ? this.customBrushes : [],
             useCompression
@@ -1513,9 +1566,31 @@ export class ReactiveMapEditor {
 
         // Handle tilemap data if present
         if (data.tilemap) {
+            // If we have image data, create a data URL and use it
+            if (data.tilemap.imageData) {
+                this.tilemapUrl = data.tilemap.imageData;
+            } else {
+                this.tilemapUrl = data.tilemap.url;
+            }
             this.tileWidth = data.tilemap.tileWidth;
             this.tileHeight = data.tilemap.tileHeight;
             this.tileSpacing = data.tilemap.spacing;
+
+            // Create new tilemap with updated settings
+            this.tilemap = new Tilemap(
+                this.tilemapUrl,
+                this.tileWidth,
+                this.tileHeight,
+                this.tileSpacing
+            );
+
+            // Load the new tilemap
+            try {
+                await this.tilemap.load();
+            } catch (error) {
+                console.error('Failed to load tilemap:', error);
+                throw error;
+            }
         }
 
         // Handle map data based on format
@@ -1543,7 +1618,6 @@ export class ReactiveMapEditor {
                     .map(() => Array(unpackedData[0][0].length).fill(-1));
                 unpackedData.push(emptyLayer);
             }
-            this.mapData = unpackedData.slice(0, this.MAX_LAYERS);
 
             // Save current state to undo stack
             this.undoStack.push(cloneMapData(this.mapData));
@@ -1673,6 +1747,11 @@ export class ReactiveMapEditor {
             console.error('Failed to load new tilemap:', error);
             throw error;
         }
+    }
+
+    moveLayer(fromIndex: number, toIndex: number) {
+        const layer = this.mapData.splice(fromIndex, 1)[0];
+        this.mapData.splice(toIndex, 0, layer);
     }
 
     // Layer operations

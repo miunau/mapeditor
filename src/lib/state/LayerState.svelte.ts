@@ -1,10 +1,10 @@
 import { FSM, type FSMContext, type FSMState } from '../utils/fsm.svelte.js';
 
 export type LayerContext = {
-    currentLayer: number;
-    showAllLayers: boolean;
+    currentLayer: number;  // The layer being edited
+    showAllLayers: boolean;  // For opacity/editing view
     layerOpacities: number[];
-    layerVisibility: boolean[];
+    layerVisibility: boolean[];  // Whether layer is enabled at all
     readonly MAX_LAYERS: number;
 }
 
@@ -50,7 +50,32 @@ const states: LayerStates = {
             },
             'toggleLayerVisibility': (context: FSMContext<LayerContext>, layer: number) => {
                 if (layer >= 0 && layer < context.MAX_LAYERS) {
+                    // Toggle visibility for this layer
                     context.layerVisibility[layer] = !context.layerVisibility[layer];
+                    
+                    // If we're disabling the current editing layer, switch to the next visible layer
+                    if (!context.layerVisibility[layer] && context.currentLayer === layer) {
+                        const nextVisibleLayer = context.layerVisibility.findIndex((visible, i) => visible && i !== layer);
+                        if (nextVisibleLayer !== -1) {
+                            context.currentLayer = nextVisibleLayer;
+                        }
+                    }
+                }
+                return 'normal';
+            },
+            'enableAllLayers': (context: FSMContext<LayerContext>) => {
+                context.layerVisibility = Array(context.MAX_LAYERS).fill(true);
+                return 'normal';
+            },
+            'disableAllLayers': (context: FSMContext<LayerContext>) => {
+                // Keep at least one layer visible
+                const currentVisible = context.layerVisibility[context.currentLayer];
+                context.layerVisibility = Array(context.MAX_LAYERS).fill(false);
+                if (currentVisible) {
+                    context.layerVisibility[context.currentLayer] = true;
+                } else {
+                    context.layerVisibility[0] = true;
+                    context.currentLayer = 0;
                 }
                 return 'normal';
             }
@@ -65,9 +90,12 @@ const states: LayerStates = {
         on: {
             'selectLayer': (context: FSMContext<LayerContext>, layer: number) => {
                 if (layer >= 0 && layer < context.MAX_LAYERS) {
-                    context.currentLayer = layer;
-                    context.showAllLayers = false;
-                    return 'normal';
+                    // Only allow selecting visible layers
+                    if (context.layerVisibility[layer]) {
+                        context.currentLayer = layer;
+                        context.showAllLayers = false;
+                        return 'normal';
+                    }
                 }
                 return 'allLayers';
             },
@@ -82,6 +110,18 @@ const states: LayerStates = {
                     context.layerVisibility[layer] = !context.layerVisibility[layer];
                 }
                 return 'allLayers';
+            },
+            'enableAllLayers': (context: FSMContext<LayerContext>) => {
+                context.layerVisibility = Array(context.MAX_LAYERS).fill(true);
+                return 'allLayers';
+            },
+            'disableAllLayers': (context: FSMContext<LayerContext>) => {
+                // Keep at least one layer visible
+                context.layerVisibility = Array(context.MAX_LAYERS).fill(false);
+                context.layerVisibility[0] = true;
+                context.currentLayer = 0;
+                context.showAllLayers = false;
+                return 'normal';
             }
         }
     }

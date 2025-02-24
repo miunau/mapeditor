@@ -56,6 +56,15 @@ label {
 
 button {
     cursor: pointer;
+    text-box: cap alphabetic;
+}
+
+button.small {
+    min-width: 12px;
+}
+
+button.bold {
+    font-weight: bold;
 }
 
 button.active {
@@ -68,4 +77,27 @@ button:active svg {
     position: relative;
     top: 1px;
     left: 1px;
+}
+
+h1, h2, h3, h4, h5, h6, p, span, input, textarea, select, label, button {
+    text-box: cap alphabetic;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    margin: 0 !important;
+    font-size: 12px !important;
+}
+
+hr {
+    display: block;
+    margin: 2px 0;
+}
+
+kbd {
+    border: 1px solid #222;
+    background: #444;
+    color: #fff;
+    border-radius: 3px;
+    padding: 2px 5px;
+    font-family: "MS Sans Serif";
 }
