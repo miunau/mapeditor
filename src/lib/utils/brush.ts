@@ -148,15 +148,47 @@ export function drawFloodFillPreview(
     zoomLevel: number,
     mapToScreen: (x: number, y: number, offsetX: number, offsetY: number, zoom: number, tileW: number, tileH: number) => Point
 ) {
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-    ctx.lineWidth = 2 / zoomLevel;
+    if (points.length === 0) return;
+
+    // Find the bounding box of all points
+    let minX = Infinity, minY = Infinity;
+    let maxX = -Infinity, maxY = -Infinity;
     
-    points.forEach(point => {
-        const screenPos = mapToScreen(point.x, point.y, 0, 0, 1, tileWidth, tileHeight);
-        ctx.fillRect(screenPos.x, screenPos.y, tileWidth, tileHeight);
-        ctx.strokeRect(screenPos.x, screenPos.y, tileWidth, tileHeight);
-    });
+    for (const point of points) {
+        minX = Math.min(minX, point.x);
+        minY = Math.min(minY, point.y);
+        maxX = Math.max(maxX, point.x);
+        maxY = Math.max(maxY, point.y);
+    }
+
+    // Create a temporary canvas for the fill area
+    const width = (maxX - minX + 1) * tileWidth;
+    const height = (maxY - minY + 1) * tileHeight;
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const tempCtx = tempCanvas.getContext('2d')!;
+
+    // Create a path for all points at once
+    tempCtx.beginPath();
+    for (const point of points) {
+        const x = (point.x - minX) * tileWidth;
+        const y = (point.y - minY) * tileHeight;
+        tempCtx.rect(x, y, tileWidth, tileHeight);
+    }
+
+    // Fill all rectangles in one operation
+    tempCtx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+    tempCtx.fill();
+
+    // Draw borders in one operation
+    tempCtx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    tempCtx.lineWidth = 2 / zoomLevel;
+    tempCtx.stroke();
+
+    // Draw the temporary canvas to the main canvas in one operation
+    const screenPos = mapToScreen(minX, minY, 0, 0, 1, tileWidth, tileHeight);
+    ctx.drawImage(tempCanvas, screenPos.x, screenPos.y);
 }
 
 // Draw a rectangle preview with optional custom brush pattern

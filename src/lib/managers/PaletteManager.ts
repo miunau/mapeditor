@@ -104,9 +104,9 @@ export class PaletteManager {
 
         const customBrushes = this.brushManager.getCustomBrushes();
         for (const brush of customBrushes) {
-            const scale = Math.min(1, maxBrushWidth / brush.preview.width);
-            const width = brush.preview.width * scale;
-            const height = brush.preview.height * scale;
+            const scale = Math.min(1, maxBrushWidth / brush.preview!.width);
+            const width = brush.preview!.width * scale;
+            const height = brush.preview!.height * scale;
 
             // Check if we need to wrap to next row
             if (currentX + width > this.paletteX + maxBrushWidth) {
@@ -151,9 +151,9 @@ export class PaletteManager {
 
         const customBrushes = this.brushManager.getCustomBrushes();
         for (const brush of customBrushes) {
-            const scale = Math.min(1, maxBrushWidth / brush.preview.width);
-            const width = brush.preview.width * scale;
-            const height = brush.preview.height * scale;
+            const scale = Math.min(1, maxBrushWidth / brush.preview!.width);
+            const width = brush.preview!.width * scale;
+            const height = brush.preview!.height * scale;
 
             // Check if we need to wrap to next row
             if (currentX + width > this.paletteX + maxBrushWidth) {
@@ -192,9 +192,9 @@ export class PaletteManager {
         // Calculate height considering wrapping
         const customBrushes = this.brushManager.getCustomBrushes();
         for (const brush of customBrushes) {
-            const scale = Math.min(1, maxBrushWidth / brush.preview.width);
-            const width = brush.preview.width * scale;
-            const height = brush.preview.height * scale;
+            const scale = Math.min(1, maxBrushWidth / brush.preview!.width);
+            const width = brush.preview!.width * scale;
+            const height = brush.preview!.height * scale;
 
             // Check if we need to wrap to next row
             if (currentX + width > this.paletteX + maxBrushWidth) {
@@ -310,8 +310,8 @@ export class PaletteManager {
             if (brushPos) {
                 highlightX = brushPos.x;
                 highlightY = brushPos.y;
-                highlightWidth = selectedBrush.preview.width;
-                highlightHeight = selectedBrush.preview.height;
+                highlightWidth = selectedBrush.preview!.width;
+                highlightHeight = selectedBrush.preview!.height;
             } else {
                 return;
             }
@@ -360,7 +360,7 @@ export class PaletteManager {
 
             // Draw brush preview
             ctx.drawImage(
-                brush.preview,
+                brush.preview!,
                 currentX,
                 currentY,
                 width,
@@ -404,8 +404,8 @@ export class PaletteManager {
         }
 
         if ('preview' in brush) {
-            const tilesWide = Math.ceil(brush.preview.width / this.tilemap.tileWidth);
-            const tilesHigh = Math.ceil(brush.preview.height / this.tilemap.tileHeight);
+            const tilesWide = Math.ceil(brush.preview!.width / this.tilemap.tileWidth);
+            const tilesHigh = Math.ceil(brush.preview!.height / this.tilemap.tileHeight);
             return {
                 width: tilesWide * (this.tilemap.tileWidth + this.tilemap.spacing) - this.tilemap.spacing,
                 height: tilesHigh * (this.tilemap.tileHeight + this.tilemap.spacing) - this.tilemap.spacing
@@ -576,8 +576,8 @@ export class PaletteManager {
         if (!pos) return this.paletteX;
 
         const maxBrushWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) - 20;
-        const scale = Math.min(1, maxBrushWidth / brush.preview.width);
-        return pos.x + (brush.preview.width * scale) / 2;
+        const scale = Math.min(1, maxBrushWidth / brush.preview!.width);
+        return pos.x + (brush.preview!.width * scale) / 2;
     }
 
     // Add this method to help with navigation
@@ -604,9 +604,9 @@ export class PaletteManager {
 
         const customBrushes = this.brushManager.getCustomBrushes();
         for (const b of customBrushes) {
-            const gridWidth = Math.ceil(b.preview.width / this.tilemap.tileWidth) * this.tilemap.tileWidth;
-            const scale = Math.min(1, gridWidth / b.preview.width);
-            const width = b.preview.width * scale;
+            const gridWidth = Math.ceil(b.preview!.width / this.tilemap.tileWidth) * this.tilemap.tileWidth;
+            const scale = Math.min(1, gridWidth / b.preview!.width);
+            const width = b.preview!.width * scale;
 
             if (currentX + width > this.paletteX + maxBrushWidth) {
                 currentX = this.paletteX;
@@ -672,5 +672,223 @@ export class PaletteManager {
 
         const { height } = this.getBrushDimensions(brush);
         return pos.y + height / 2;
+    }
+
+    // New method for WASD navigation
+    navigateBrushGrid(currentBrushId: string, direction: 'up' | 'down' | 'left' | 'right'): string | null {
+        const currentBrush = this.brushManager.getBrush(currentBrushId);
+        if (!currentBrush) return null;
+
+        // Get the center X position of the current brush for horizontal alignment
+        const centerX = this.getBrushCenterX(currentBrushId);
+        
+        // Handle built-in tiles (regular tilemap tiles)
+        if (currentBrush.isBuiltIn) {
+            const tileId = parseInt(currentBrush.id.replace('tile_', ''));
+            const tilesPerRow = this.tilemap.width;
+            const totalTiles = this.brushManager.getBuiltInBrushes().length;
+            const tilesPerColumn = Math.ceil(totalTiles / tilesPerRow);
+            const currentRow = Math.floor(tileId / tilesPerRow);
+            const currentCol = tileId % tilesPerRow;
+            
+            console.log('PaletteManager: Navigating from built-in tile', {
+                tileId,
+                currentRow,
+                currentCol,
+                tilesPerRow,
+                tilesPerColumn,
+                direction
+            });
+            
+            switch (direction) {
+                case 'up':
+                    if (currentRow > 0) {
+                        // Move up one row within tilemap
+                        return `tile_${tileId - tilesPerRow}`;
+                    } else {
+                        // We're at the top row, try to move to custom brushes
+                        return this.findNearestCustomBrush(centerX);
+                    }
+                
+                case 'down':
+                    if (currentRow < tilesPerColumn - 1 && tileId + tilesPerRow < totalTiles) {
+                        // Move down one row within tilemap
+                        return `tile_${tileId + tilesPerRow}`;
+                    } else {
+                        // We're at the bottom row, try to move to custom brushes
+                        return this.findNearestCustomBrush(centerX);
+                    }
+                
+                case 'left':
+                    if (currentCol > 0) {
+                        // Move left one column
+                        return `tile_${tileId - 1}`;
+                    } else {
+                        // Wrap to end of previous row
+                        const prevRow = (currentRow + tilesPerColumn - 1) % tilesPerColumn;
+                        const lastColInPrevRow = Math.min(tilesPerRow - 1, Math.floor((totalTiles - 1 - prevRow * tilesPerRow) % tilesPerRow));
+                        const newTileId = prevRow * tilesPerRow + lastColInPrevRow;
+                        
+                        // Ensure we don't exceed the total number of tiles
+                        if (newTileId < totalTiles) {
+                            return `tile_${newTileId}`;
+                        } else {
+                            return `tile_${totalTiles - 1}`;
+                        }
+                    }
+                
+                case 'right':
+                    if (currentCol < tilesPerRow - 1 && tileId + 1 < totalTiles) {
+                        // Move right one column
+                        return `tile_${tileId + 1}`;
+                    } else {
+                        // Wrap to start of next row
+                        const nextRow = (currentRow + 1) % tilesPerColumn;
+                        const newTileId = nextRow * tilesPerRow;
+                        
+                        // Ensure we don't exceed the total number of tiles
+                        if (newTileId < totalTiles) {
+                            return `tile_${newTileId}`;
+                        } else {
+                            return `tile_0`; // Wrap to first tile
+                        }
+                    }
+            }
+        } 
+        // Handle custom brushes
+        else {
+            const pos = this.getBrushRowAndColumn(currentBrushId);
+            if (!pos) return null;
+            
+            console.log('PaletteManager: Navigating from custom brush', {
+                brushId: currentBrush.id,
+                row: pos.row,
+                col: pos.col,
+                direction
+            });
+            
+            switch (direction) {
+                case 'up':
+                    if (pos.row > 0) {
+                        // Try to find a brush in the previous row at a similar column
+                        const brushId = this.findNearestBrushInRow(centerX, pos.row - 1);
+                        if (brushId) return brushId;
+                    }
+                    // If no brush found or we're at the top row, move to tilemap
+                    return this.findNearestTile(centerX, 'down');
+                
+                case 'down':
+                    // Try to find a brush in the next row at a similar column
+                    const brushId = this.findNearestBrushInRow(centerX, pos.row + 1);
+                    if (brushId) return brushId;
+                    
+                    // If no brush found in next row, wrap to tilemap
+                    return this.findNearestTile(centerX, 'up');
+                
+                case 'left':
+                    // Find all brushes in the same row
+                    const brushesInRow = this.brushManager.getCustomBrushes().filter(brush => {
+                        const brushPos = this.getBrushRowAndColumn(brush.id);
+                        return brushPos && brushPos.row === pos.row && brushPos.col < pos.col;
+                    });
+                    
+                    if (brushesInRow.length > 0) {
+                        // Get the brush with the highest column index that's less than current
+                        let closestBrushCol = -1;
+                        let closestBrushId = null;
+                        
+                        for (const brush of brushesInRow) {
+                            const brushPos = this.getBrushRowAndColumn(brush.id);
+                            if (brushPos && brushPos.col > closestBrushCol) {
+                                closestBrushCol = brushPos.col;
+                                closestBrushId = brush.id;
+                            }
+                        }
+                        
+                        if (closestBrushId) {
+                            return closestBrushId;
+                        }
+                    }
+                    
+                    // If no brush found to the left, wrap to the rightmost brush in the previous row
+                    // or to the tilemap if we're at the first row
+                    if (pos.row > 0) {
+                        const prevRowBrushes = this.brushManager.getCustomBrushes().filter(brush => {
+                            const brushPos = this.getBrushRowAndColumn(brush.id);
+                            return brushPos && brushPos.row === pos.row - 1;
+                        });
+                        
+                        if (prevRowBrushes.length > 0) {
+                            let rightmostBrush = prevRowBrushes[0];
+                            let rightmostCol = -1;
+                            
+                            for (const brush of prevRowBrushes) {
+                                const brushPos = this.getBrushRowAndColumn(brush.id);
+                                if (brushPos && brushPos.col > rightmostCol) {
+                                    rightmostCol = brushPos.col;
+                                    rightmostBrush = brush;
+                                }
+                            }
+                            
+                            return rightmostBrush.id;
+                        }
+                    }
+                    
+                    // If all else fails, go to the tilemap
+                    return this.findNearestTile(centerX, 'down');
+                
+                case 'right':
+                    // Find all brushes in the same row
+                    const brushesInRowRight = this.brushManager.getCustomBrushes().filter(brush => {
+                        const brushPos = this.getBrushRowAndColumn(brush.id);
+                        return brushPos && brushPos.row === pos.row && brushPos.col > pos.col;
+                    });
+                    
+                    if (brushesInRowRight.length > 0) {
+                        // Get the brush with the lowest column index that's greater than current
+                        let closestBrushCol = Infinity;
+                        let closestBrushId = null;
+                        
+                        for (const brush of brushesInRowRight) {
+                            const brushPos = this.getBrushRowAndColumn(brush.id);
+                            if (brushPos && brushPos.col < closestBrushCol) {
+                                closestBrushCol = brushPos.col;
+                                closestBrushId = brush.id;
+                            }
+                        }
+                        
+                        if (closestBrushId) {
+                            return closestBrushId;
+                        }
+                    }
+                    
+                    // If no brush found to the right, wrap to the leftmost brush in the next row
+                    // or to the tilemap if we're at the last row
+                    const nextRowBrushes = this.brushManager.getCustomBrushes().filter(brush => {
+                        const brushPos = this.getBrushRowAndColumn(brush.id);
+                        return brushPos && brushPos.row === pos.row + 1;
+                    });
+                    
+                    if (nextRowBrushes.length > 0) {
+                        let leftmostBrush = nextRowBrushes[0];
+                        let leftmostCol = Infinity;
+                        
+                        for (const brush of nextRowBrushes) {
+                            const brushPos = this.getBrushRowAndColumn(brush.id);
+                            if (brushPos && brushPos.col < leftmostCol) {
+                                leftmostCol = brushPos.col;
+                                leftmostBrush = brush;
+                            }
+                        }
+                        
+                        return leftmostBrush.id;
+                    }
+                    
+                    // If all else fails, go to the tilemap
+                    return this.findNearestTile(centerX, 'up');
+            }
+        }
+        
+        return null;
     }
 } 

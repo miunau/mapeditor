@@ -31,20 +31,42 @@ import { toolFSM } from './state/ToolState.svelte';
 import { layerFSM } from './state/LayerState.svelte';
 import { editorStore } from './state/EditorStore.svelte';
 
+import { OptimizedRenderer } from './renderer/OptimizedRenderer';
+import { SharedMapData } from './SharedMapData';
+
 // The singleton editor instance
 let editor: ReactiveMapEditor | undefined = $state();
 
 // The editor class that integrates with FSMs
 export class ReactiveMapEditor {
-    // Canvas and rendering context
+    // Canvas for rendering the map 
     canvas: HTMLCanvasElement;
-    ctx: CanvasRenderingContext2D;
+    
+    // Separate canvas for brush previews
+    previewCanvas: HTMLCanvasElement | null = null;
+    previewCtx: CanvasRenderingContext2D | null = null;
+    
+    // Separate canvas for the palette
+    paletteCanvas: HTMLCanvasElement | null = null;
+    paletteCtx: CanvasRenderingContext2D | null = null;
+    // We no longer need this in the main thread since rendering is handled by the worker
+    // ctx: CanvasRenderingContext2D | null = null;
 
     // Map data
     mapData: MapData;
+    sharedMapData: SharedMapData | null = null; // Add shared map data
     tilemap: Tilemap;
     brushManager: BrushManager | null = null;
     paletteManager: PaletteManager | null = null;
+
+    // Bound event handlers
+    private boundHandleMouseDown: (e: MouseEvent) => void;
+    private boundHandleMouseMove: (e: MouseEvent) => void;
+    private boundHandleMouseUp: (e: MouseEvent) => void;
+    private boundHandleKeyDown: (e: KeyboardEvent) => void;
+    private boundHandleKeyUp: (e: KeyboardEvent) => void;
+    private boundHandleWheel: (e: WheelEvent) => void;
+    private boundResize: () => void;
 
     // Constants
     readonly MAX_LAYERS = 10;
@@ -117,8 +139,10 @@ export class ReactiveMapEditor {
     fps = $state(0);
     private lastFrameTime = 0;
     private frameTimeHistory: number[] = [];
-    private readonly FPS_SAMPLE_SIZE = 60; // Increased to 60 frames
-    private readonly FPS_SMOOTHING = 0.98; // Exponential smoothing factor (higher = smoother)
+    private readonly FPS_SAMPLE_SIZE = 30; // Reduced to 30 frames for more responsive updates
+    private readonly FPS_SMOOTHING = 0.95; // Slightly reduced smoothing factor
+    private readonly MAX_FPS = 144; // Cap FPS at 144Hz which is reasonable for most displays
+    private readonly MIN_FPS = 1; // Minimum FPS to display
     private smoothedFps = 0;
 
     // Add to class properties
@@ -127,10 +151,17 @@ export class ReactiveMapEditor {
     private isDrawingEllipse = $state(false);
     private isShiftPressed = $state(false);
 
+    private renderer: OptimizedRenderer | null = null;
+
     constructor(canvas: HTMLCanvasElement, width: number = 20, height: number = 15) {
         this.canvas = canvas;
-        this.ctx = canvas.getContext("2d")!;
-        this.ctx.imageSmoothingEnabled = false;
+        // Don't create a context here - the canvas will be transferred to the worker
+        
+        // Create a separate canvas for brush previews that will be positioned over the main canvas
+        this.createPreviewCanvas();
+
+        // Create a separate canvas for the palette
+        this.createPaletteCanvas();
 
         // Initialize tilemap
         this.tilemap = new Tilemap(
@@ -143,9 +174,27 @@ export class ReactiveMapEditor {
         // Initialize map data
         this.mapData = createEmptyMap(width, height, this.MAX_LAYERS);
         this.undoStack = [cloneMapData(this.mapData)];
+        
+        // Initialize shared map data
+        this.sharedMapData = new SharedMapData(width, height, this.MAX_LAYERS, this.mapData, this.tileWidth, this.tileHeight);
+
+        // Create bound event handlers
+        this.boundHandleMouseDown = this.handleMouseDown.bind(this);
+        this.boundHandleMouseMove = this.handleMouseMove.bind(this);
+        this.boundHandleMouseUp = this.handleMouseUp.bind(this);
+        this.boundHandleKeyDown = this.handleKeyDown.bind(this);
+        this.boundHandleKeyUp = this.handleKeyUp.bind(this);
+        this.boundHandleWheel = this.handleWheel.bind(this);
+        this.boundResize = this.resize.bind(this);
 
         // Set up event listeners
-        this.canvas.addEventListener('wheel', this.handleWheel.bind(this));
+        this.canvas.addEventListener('wheel', this.boundHandleWheel);
+        this.canvas.addEventListener('mousedown', this.boundHandleMouseDown);
+        this.canvas.addEventListener('mousemove', this.boundHandleMouseMove);
+        window.addEventListener('mouseup', this.boundHandleMouseUp);
+        window.addEventListener('keydown', this.boundHandleKeyDown);
+        window.addEventListener('keyup', this.boundHandleKeyUp);
+        window.addEventListener('resize', this.boundResize);
 
         // Store the instance
         editor = this;
@@ -158,20 +207,66 @@ export class ReactiveMapEditor {
     }
 
     private setupReactivity() {
+        // Watch for layer changes
+        $effect(() => {
+            const currentLayer = layerFSM.context.currentLayer;
+            const showAllLayers = layerFSM.context.showAllLayers;
+            
+            // Update the renderer with the current layer information
+            if (this.renderer) {
+                this.renderer.setCurrentLayer(currentLayer, showAllLayers);
+            }
+            
+            // Log layer change
+            console.log(`MapEditor: Current layer changed to ${currentLayer}, showAllLayers: ${showAllLayers}`);
+        });
+
+        // Watch for layer visibility changes
+        $effect(() => {
+            const layerVisibility = layerFSM.context.layerVisibility;
+            
+            // Update each layer's visibility in the renderer
+            if (this.renderer) {
+                for (let i = 0; i < this.MAX_LAYERS; i++) {
+                    this.renderer.setLayerVisibility(i, layerVisibility[i]);
+                }
+            }
+        });
+
         // Sync tool state
         $effect(() => {
             this.isFloodFillMode = toolFSM.context.currentTool === 'fill';
             this.setBrushSize(toolFSM.context.brushSize);
         });
 
-        // Sync layer state
+        // Sync selected brush with selected tile
         $effect(() => {
-            this.currentLayer = layerFSM.context.currentLayer;
-            layerFSM.context.layerVisibility.forEach((visible, i) => {
-                if (this.isLayerVisible(i) !== visible) {
-                    this.toggleLayerVisibility(i);
+            if (this.brushManager && toolFSM.context.selectedTile >= 0) {
+                const brushId = `tile_${toolFSM.context.selectedTile}`;
+                if (this.brushManager.getSelectedBrush()?.id !== brushId) {
+                    this.brushManager.selectBrush(brushId);
+                    console.log('MapEditor: Synced brush selection with toolFSM tile:', toolFSM.context.selectedTile, 'brushId:', brushId);
+                    // Draw the palette when the selected brush changes
+                    this.drawPalette();
                 }
-            });
+            }
+        });
+
+        // Log brush selection changes and update palette
+        $effect(() => {
+            if (this.brushManager) {
+                const selectedBrush = this.brushManager.getSelectedBrush();
+                console.log('MapEditor: Brush selection changed:', selectedBrush);
+                // Draw the palette when the selected brush changes
+                this.drawPalette();
+            }
+        });
+
+        // Sync transform state
+        $effect(() => {
+            if (this.renderer) {
+                this.renderer.updateTransform(this.offsetX, this.offsetY, this.zoomLevel);
+            }
         });
     }
 
@@ -193,12 +288,24 @@ export class ReactiveMapEditor {
     }
 
     toggleLayerVisibility(layer: number) {
+        // Call the existing method to update state
         layerFSM.send('toggleLayerVisibility', layer);
+        
+        // Now notify the worker of the visibility change
+        if (this.renderer) {
+            this.renderer.setLayerVisibility(layer, layerFSM.context.layerVisibility[layer]);
+        }
     }
 
     // Grid methods
     toggleGrid() {
         this.showGrid = !this.showGrid;
+        
+        // Update the renderer with the new grid state
+        if (this.renderer) {
+            this.renderer.setShowGrid(this.showGrid);
+        }
+        
         // Notify editor store of the change
         editorStore.setShowGrid(this.showGrid);
     }
@@ -212,10 +319,8 @@ export class ReactiveMapEditor {
     handleWheel(e: WheelEvent) {
         e.preventDefault();
 
-        // Get mouse position before zoom
-        const rect = this.canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
+        // Get mouse position before zoom using our helper function
+        const { x: mouseX, y: mouseY } = this.calculateMouseCoordinates(e);
 
         // Find the next zoom level based on scroll direction
         const direction = e.deltaY < 0 ? 'up' : 'down';
@@ -239,42 +344,54 @@ export class ReactiveMapEditor {
         this.zoomLevel = transform.zoom as ZoomLevel;
         this.offsetX = transform.offset.x;
         this.offsetY = transform.offset.y;
+
+        // Update renderer transform
+        if (this.renderer) {
+            this.renderer.updateTransform(this.offsetX, this.offsetY, this.zoomLevel);
+        }
     }
 
     // Core rendering methods
     private animationLoop(timestamp: number) {
-        // Calculate FPS with rolling average and exponential smoothing
+        // Calculate FPS with rolling average, exponential smoothing, and limits
         if (this.lastFrameTime) {
             const frameTime = timestamp - this.lastFrameTime;
-            this.frameTimeHistory.push(frameTime);
-            
-            // Keep only the last N frames
-            if (this.frameTimeHistory.length > this.FPS_SAMPLE_SIZE) {
-                this.frameTimeHistory.shift();
+            // Ignore unrealistic frame times
+            if (frameTime >= 1 && frameTime <= 1000) {
+                this.frameTimeHistory.push(frameTime);
+                
+                // Keep only the last N frames
+                if (this.frameTimeHistory.length > this.FPS_SAMPLE_SIZE) {
+                    this.frameTimeHistory.shift();
+                }
+                
+                // Calculate average frame time, excluding outliers
+                const sortedTimes = [...this.frameTimeHistory].sort((a, b) => a - b);
+                const validTimes = sortedTimes.slice(
+                    Math.floor(sortedTimes.length * 0.1),  // Skip bottom 10%
+                    Math.ceil(sortedTimes.length * 0.9)    // Skip top 10%
+                );
+                const averageFrameTime = validTimes.reduce((sum, time) => sum + time, 0) / validTimes.length;
+                
+                // Calculate current FPS and apply limits
+                const currentFps = Math.min(this.MAX_FPS, Math.max(this.MIN_FPS, 1000 / averageFrameTime));
+                
+                // Apply exponential smoothing
+                if (this.smoothedFps === 0) {
+                    this.smoothedFps = currentFps; // Initialize on first frame
+                } else {
+                    this.smoothedFps = this.FPS_SMOOTHING * this.smoothedFps + (1 - this.FPS_SMOOTHING) * currentFps;
+                }
+                
+                this.fps = Math.round(this.smoothedFps);
             }
-            
-            // Calculate average frame time
-            const averageFrameTime = this.frameTimeHistory.reduce((sum, time) => sum + time, 0) / this.frameTimeHistory.length;
-            const currentFps = 1000 / averageFrameTime;
-            
-            // Apply exponential smoothing
-            if (this.smoothedFps === 0) {
-                this.smoothedFps = currentFps; // Initialize on first frame
-            } else {
-                this.smoothedFps = this.FPS_SMOOTHING * this.smoothedFps + (1 - this.FPS_SMOOTHING) * currentFps;
-            }
-            
-            this.fps = Math.round(this.smoothedFps);
         }
         this.lastFrameTime = timestamp;
 
-        // Update panning first
+        // Update panning
         this.updatePanning();
         
-        // Then update rendering
-        this.update();
-        
-        // Continue the loop
+        // Continue the loop - no need to do any drawing as that happens in the worker
         requestAnimationFrame(this.animationLoop.bind(this));
     }
 
@@ -301,294 +418,35 @@ export class ReactiveMapEditor {
 
         // Apply velocities to offset
         if (this.panVelocityX !== 0 || this.panVelocityY !== 0) {
-            this.offsetX += this.panVelocityX;
-            this.offsetY += this.panVelocityY;
+            this.updatePanOffset(this.panVelocityX, this.panVelocityY);
         }
     }
 
     private update() {
         if (!this.tilemap.isLoaded()) return;
 
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        this.drawBackground();
-        this.drawMap();
-        this.drawGrid();
-        this.paletteManager?.drawPalette(this.ctx);
-    }
-
-    private drawBackground() {
-        this.ctx.fillStyle = "#4a4a4a";
-        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    }
-
-    private drawMap() {
-        if (!this.tilemap.isLoaded()) return;
-
-        // Apply zoom and offset transformation
-        this.ctx.save();
-        this.ctx.translate(Math.round(this.offsetX), Math.round(this.offsetY));
-        this.ctx.scale(this.zoomLevel, this.zoomLevel);
-
-        // Calculate visible area in map coordinates (add a small buffer for smooth scrolling)
-        const viewportBounds = {
-            left: -this.offsetX / this.zoomLevel - this.tilemap.tileWidth,
-            top: -this.offsetY / this.zoomLevel - this.tilemap.tileHeight,
-            right: (this.canvas.width - this.offsetX) / this.zoomLevel + this.tilemap.tileWidth,
-            bottom: (this.canvas.height - this.offsetY) / this.zoomLevel + this.tilemap.tileHeight
-        };
-
-        // Convert to tile coordinates and clamp to map bounds
-        const dimensions = this.getMapDimensions();
-        const startTileX = Math.max(0, Math.floor(viewportBounds.left / this.tilemap.tileWidth));
-        const startTileY = Math.max(0, Math.floor(viewportBounds.top / this.tilemap.tileHeight));
-        const endTileX = Math.min(dimensions.width - 1, Math.ceil(viewportBounds.right / this.tilemap.tileWidth));
-        const endTileY = Math.min(dimensions.height - 1, Math.ceil(viewportBounds.bottom / this.tilemap.tileHeight));
-
-        // Draw each layer from bottom to top, but only for visible tiles
-        for (let layer = 0; layer < this.MAX_LAYERS; layer++) {
-            // Skip hidden layers
-            if (!this.isLayerVisible(layer)) continue;
-
-            // If showing all layers or this is the current layer, use full opacity
-            this.ctx.globalAlpha = this.currentLayer === -1 || layer === this.currentLayer ? 1.0 : 0.3;
-            
-            for (let y = startTileY; y <= endTileY; y++) {
-                for (let x = startTileX; x <= endTileX; x++) {
-                    const tileIndex = this.mapData[layer][y][x];
-                    if (tileIndex === -1) continue; // Skip empty tiles
-                    
-                    const tile = this.tilemap.getTile(tileIndex);
-                    if (tile) {
-                        const screenPos = mapToScreen(x, y, 0, 0, 1, this.tilemap.tileWidth, this.tilemap.tileHeight);
-                        // Round the position to prevent sub-pixel rendering
-                        this.ctx.drawImage(tile, Math.round(screenPos.x), Math.round(screenPos.y));
-                    }
-                }
-            }
+        // Let the renderer handle all drawing
+        if (this.renderer) {
+            this.renderer.redrawAll();
         }
+    }
+
+    // Add this private method for calculating mouse coordinates
+    private calculateMouseCoordinates(e: MouseEvent): { x: number, y: number } {
+        const rect = this.canvas.getBoundingClientRect();
+        // Calculate the scaling factor between the canvas's CSS size and its actual size
+        const scaleX = this.canvas.width / rect.width;
+        const scaleY = this.canvas.height / rect.height;
+        // Apply the scaling to get the correct coordinates
+        const mouseX = (e.clientX - rect.left) * scaleX;
+        const mouseY = (e.clientY - rect.top) * scaleY;
         
-        // Reset alpha
-        this.ctx.globalAlpha = 1.0;
-        this.ctx.restore();
-    }
-
-    private drawGrid() {
-        if (!this.showGrid) {
-            // Still draw brush preview even if grid is hidden
-            this.drawBrushPreview();
-            return;
-        }
-
-        const dimensions = this.getMapDimensions();
-        const mapWidthPx = dimensions.width * this.tilemap.tileWidth;
-        const mapHeightPx = dimensions.height * this.tilemap.tileHeight;
-
-        this.ctx.save();
-        this.ctx.translate(this.offsetX, this.offsetY);
-        this.ctx.scale(this.zoomLevel, this.zoomLevel);
-
-        this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-        this.ctx.lineWidth = 1 / this.zoomLevel; // Keep grid line width constant
-
-        // Vertical lines
-        for (let x = 0; x <= dimensions.width; x++) {
-            const screenPos = mapToScreen(x, 0, 0, 0, 1, this.tilemap.tileWidth, this.tilemap.tileHeight);
-            this.ctx.beginPath();
-            this.ctx.moveTo(screenPos.x, 0);
-            this.ctx.lineTo(screenPos.x, mapHeightPx);
-            this.ctx.stroke();
-        }
-
-        // Horizontal lines
-        for (let y = 0; y <= dimensions.height; y++) {
-            const screenPos = mapToScreen(0, y, 0, 0, 1, this.tilemap.tileWidth, this.tilemap.tileHeight);
-            this.ctx.beginPath();
-            this.ctx.moveTo(0, screenPos.y);
-            this.ctx.lineTo(mapWidthPx, screenPos.y);
-            this.ctx.stroke();
-        }
-
-        this.ctx.restore();
-        
-        // Draw brush preview after grid
-        this.drawBrushPreview();
-    }
-
-    private drawBrushPreview() {
-        if (this.hoverX < 0 || this.hoverY < 0 || this.currentLayer === -1) return;
-
-        this.ctx.save();
-        this.ctx.translate(this.offsetX, this.offsetY);
-        this.ctx.scale(this.zoomLevel, this.zoomLevel);
-
-        if (this.isFloodFillMode) {
-            // Draw flood fill preview
-            const targetValue = this.mapData[this.currentLayer][this.hoverY][this.hoverX];
-            const previewLayer = this.mapData[this.currentLayer].map(row => [...row]);
-            const filledPoints = floodFill(previewLayer, this.hoverX, this.hoverY, targetValue, -2);
-            
-            const selectedBrush = this.brushManager?.getSelectedBrush();
-            if (selectedBrush) {
-                // Preview brush pattern on filled points
-                this.brushManager?.drawBrushPreviewOnPoints(
-                    this.ctx,
-                    selectedBrush,
-                    filledPoints,
-                    (idx) => this.tilemap.getTile(idx),
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight,
-                    this.useWorldAlignedRepeat
-                );
-            }
-            
-            // Draw highlight around filled area
-            drawFloodFillPreview(
-                this.ctx,
-                filledPoints,
-                this.tilemap.tileWidth,
-                this.tilemap.tileHeight,
-                this.zoomLevel,
-                mapToScreen
-            );
-        } else if (this.isDrawingEllipse && this.ellipseStartX !== null && this.ellipseStartY !== null) {
-            // Calculate initial radii
-            let radiusX = Math.abs(this.hoverX - this.ellipseStartX);
-            let radiusY = Math.abs(this.hoverY - this.ellipseStartY);
-
-            // If shift is pressed, make it a perfect circle by using the larger radius
-            if (this.isShiftPressed) {
-                const maxRadius = Math.max(radiusX, radiusY);
-                radiusX = maxRadius;
-                radiusY = maxRadius;
-            }
-
-            const ellipsePoints = getEllipsePoints(
-                this.ellipseStartX,
-                this.ellipseStartY,
-                radiusX,
-                radiusY
-            );
-            
-            const selectedBrush = this.brushManager?.getSelectedBrush();
-            if (selectedBrush) {
-                // Preview brush pattern on ellipse points
-                this.brushManager?.drawBrushPreviewOnPoints(
-                    this.ctx,
-                    selectedBrush,
-                    ellipsePoints,
-                    (idx) => this.tilemap.getTile(idx),
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight,
-                    this.useWorldAlignedRepeat
-                );
-            } else {
-                // Regular ellipse preview for erasing
-                drawRectanglePreview(
-                    this.ctx,
-                    this.ellipseStartX - radiusX,
-                    this.ellipseStartY - radiusY,
-                    radiusX * 2 + 1,
-                    radiusY * 2 + 1,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight,
-                    this.zoomLevel,
-                    mapToScreen,
-                    { fillStyle: 'rgba(255, 255, 255, 0.1)' }
-                );
-            }
-        } else if (this.isDrawingRectangle && this.rectangleStartX !== null && this.rectangleStartY !== null) {
-            // Draw rectangle preview
-            const startX = Math.min(this.rectangleStartX, this.hoverX);
-            const startY = Math.min(this.rectangleStartY, this.hoverY);
-            const endX = Math.max(this.rectangleStartX, this.hoverX);
-            const endY = Math.max(this.rectangleStartY, this.hoverY);
-            
-            const width = endX - startX + 1;
-            const height = endY - startY + 1;
-
-            const selectedBrush = this.brushManager?.getSelectedBrush();
-            if (selectedBrush) {
-                // Preview brush pattern in rectangle
-                const targetArea = {
-                    x: startX,
-                    y: startY,
-                    width,
-                    height
-                };
-                this.brushManager?.drawBrushPreview(
-                    this.ctx,
-                    selectedBrush,
-                    targetArea,
-                    (idx) => this.tilemap.getTile(idx),
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight,
-                    this.useWorldAlignedRepeat
-                );
-            } else {
-                // Regular rectangle preview for erasing
-                drawRectanglePreview(
-                    this.ctx,
-                    startX,
-                    startY,
-                    width,
-                    height,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight,
-                    this.zoomLevel,
-                    mapToScreen,
-                    { fillStyle: 'rgba(255, 255, 255, 0.1)' }
-                );
-            }
-        } else {
-            const selectedBrush = this.brushManager?.getSelectedBrush();
-            if (selectedBrush) {
-                // Regular brush preview
-                const targetArea = getBrushArea(
-                    this.hoverX,
-                    this.hoverY,
-                    toolFSM.context.currentTool === 'rectangle' ? 1 : this.brushSize,  // Use size 1 if in rectangle mode
-                    selectedBrush,
-                    this.isCustomBrushMode
-                );
-                this.brushManager?.drawBrushPreview(
-                    this.ctx,
-                    selectedBrush,
-                    targetArea,
-                    (idx) => this.tilemap.getTile(idx),
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight,
-                    this.useWorldAlignedRepeat
-                );
-            } else {
-                // Erase preview
-                const brushArea = getBrushArea(
-                    this.hoverX,
-                    this.hoverY,
-                    toolFSM.context.currentTool === 'rectangle' ? 1 : this.brushSize  // Use size 1 if in rectangle mode
-                );
-                drawRectanglePreview(
-                    this.ctx,
-                    brushArea.x,
-                    brushArea.y,
-                    brushArea.width,
-                    brushArea.height,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight,
-                    this.zoomLevel,
-                    mapToScreen,
-                    { fillStyle: 'rgba(255, 255, 255, 0.1)' }
-                );
-            }
-        }
-
-        this.ctx.restore();
+        return { x: mouseX, y: mouseY };
     }
 
     // Mouse event handlers
     handleMouseDown(e: MouseEvent) {
-        const rect = this.canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
+        const { x: mouseX, y: mouseY } = this.calculateMouseCoordinates(e);
 
         // Middle click is always for panning
         if (e.button === 1) {
@@ -596,21 +454,25 @@ export class ReactiveMapEditor {
             this.isPanning = true;
             this.lastPanX = mouseX;
             this.lastPanY = mouseY;
-            return;
-        }
-
-        // Check if clicking in the palette area
-        if (this.paletteManager?.isWithinPalette(mouseX, mouseY) === true) {
-            if (e.button === 0) { // Left click for palette selection
-                this.paletteManager.handlePaletteClick(mouseX, mouseY);
-            } else if (e.button === 2) { // Right click for brush settings
-                this.paletteManager?.handlePaletteRightClick(mouseX, mouseY);
+            
+            // Forward the event to the worker
+            if (this.renderer) {
+                this.renderer.handleMouseEvent('mousedown', {
+                    x: mouseX,
+                    y: mouseY,
+                    button: e.button,
+                    isPanning: true
+                });
             }
             return;
         }
 
+        // We now handle palette clicks separately in handlePaletteMouseDown
+        // This method only needs to handle map clicks
+
         // Don't allow painting in "all layers" mode
         if (this.currentLayer === -1) {
+            console.log('MapEditor: Cannot paint in "all layers" mode');
             return;
         }
 
@@ -627,82 +489,155 @@ export class ReactiveMapEditor {
         );
 
         if (isInMapBounds(mapPos.x, mapPos.y, this.getMapDimensions())) {
+            // Update state in main thread
             if (e.button === 0 || e.button === 2) { // Left or right click
                 // Store the initial state before painting
                 if (!this.undoBuffer) {
                     this.undoBuffer = cloneMapData(this.mapData);
+                    console.log('MapEditor: Created undo buffer for painting operation');
                 }
                 
+                // Handle ellipse drawing start
                 if (toolFSM.context.currentTool === 'ellipse') {
                     this.ellipseStartX = mapPos.x;
                     this.ellipseStartY = mapPos.y;
                     this.isDrawingEllipse = true;
                     toolFSM.send('startEllipse');
+                    
+                    // Forward to worker
+                    if (this.renderer) {
+                        this.renderer.handleUIStateChange('drawingStart', {
+                            type: 'ellipse',
+                            startX: mapPos.x,
+                            startY: mapPos.y
+                        });
+                    }
                     return; // Don't set isPainting while sizing the ellipse
                 }
 
                 this.isPainting = true;
-                this.paintTile = e.button === 2 ? -1 : toolFSM.context.selectedTile;
-
-                if (this.isFloodFillMode && e.button === 0) {
-                    // Get the target value (the tile we're replacing)
-                    const targetValue = this.mapData[this.currentLayer][mapPos.y][mapPos.x];
-                    
-                        // Create a copy of the current layer for undo
-                        const layerCopy = this.mapData[this.currentLayer].map(row => [...row]);
+                
+                // Determine if we're erasing or painting
+                const isErasing = e.button === 2;
+                
+                // Set the paintTile value
+                if (isErasing) {
+                    this.paintTile = -1; // Empty tile for erasing
+                } else {
+                    // Use the selected tile
+                    const selectedBrush = this.brushManager?.getSelectedBrush();
+                    if (selectedBrush && selectedBrush.isBuiltIn) {
+                        const tileId = parseInt(selectedBrush.id.replace('tile_', ''));
+                        this.paintTile = tileId;
                         
-                        // Perform flood fill with a temporary value
-                        const filledPoints = floodFill(
-                            this.mapData[this.currentLayer],
-                            mapPos.x,
-                            mapPos.y,
-                            targetValue,
-                            -2  // Use a temporary value that won't conflict with tile indices
-                        );
-                        
-                        if (filledPoints.length > 0) {
-                        const selectedBrush = this.brushManager?.getSelectedBrush();
-                        if (selectedBrush) {
-                            // Find the bounding box of filled points
-                            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                            for (const point of filledPoints) {
-                                minX = Math.min(minX, point.x);
-                                minY = Math.min(minY, point.y);
-                                maxX = Math.max(maxX, point.x);
-                                maxY = Math.max(maxY, point.y);
-                            }
-
-                            // Apply brush to each filled point
-                            for (const point of filledPoints) {
-                                this.brushManager?.applyBrush(
-                            this.mapData[this.currentLayer],
-                                    point.x,
-                                    point.y,
-                                    1,  // Use size 1 for flood fill
-                                    { useWorldAlignedRepeat: this.useWorldAlignedRepeat }
-                                );
-                            }
-                            this.hasModifiedDuringPaint = true;
-                        }
+                        // Debug logging for tile selection
+                        console.log('DEBUG - Tile Selection:', {
+                            selectedBrushId: selectedBrush.id,
+                            tileId: tileId,
+                            tileX: tileId % this.tilemap.width,
+                            tileY: Math.floor(tileId / this.tilemap.width),
+                            tilemapWidth: this.tilemap.width
+                        });
+                    } else {
+                        this.paintTile = toolFSM.context.selectedTile;
                     }
+                    
+                    // Ensure valid tile index
+                    if (this.paintTile === null || this.paintTile < 0) {
+                        this.paintTile = 0; // Default to tile 0 instead of 1
+                    }
+                    
+                    // Log the selected tile and brush for debugging
+                    console.log('Painting - Selected tile info:', {
+                        paintTile: this.paintTile,
+                        selectedBrushId: selectedBrush?.id,
+                        toolFSMSelectedTile: toolFSM.context.selectedTile
+                    });
+                }
+                
+                console.log('MapEditor: Set paintTile to', this.paintTile, 'isErasing:', isErasing);
+
+                // Handle flood fill
+                if (this.isFloodFillMode && e.button === 0) {
+                    // Forward to worker
+                    if (this.renderer) {
+                        this.renderer.handleUIStateChange('floodFill', {
+                            x: mapPos.x,
+                            y: mapPos.y,
+                            layer: this.currentLayer,
+                            tileIndex: this.paintTile,
+                            targetValue: this.mapData[this.currentLayer][mapPos.y][mapPos.x]
+                        });
+                    }
+                    return;
                 } else if (toolFSM.context.currentTool === 'rectangle') {
+                    // Rectangle drawing start
                     this.rectangleStartX = mapPos.x;
                     this.rectangleStartY = mapPos.y;
                     this.isDrawingRectangle = true;
                     toolFSM.send('startRectangle');
+                    
+                    // Forward to worker
+                    if (this.renderer) {
+                        this.renderer.handleUIStateChange('drawingStart', {
+                            type: 'rectangle',
+                            startX: mapPos.x,
+                            startY: mapPos.y
+                        });
+                    }
+                    return;
                 } else {
-                    this.applyBrush(mapPos.x, mapPos.y, e.button === 2);
+                    // Apply brush immediately for normal painting
+                    console.log('MapEditor: Applying brush at', mapPos.x, mapPos.y, 'with tile', this.paintTile);
+                    
+                    // Forward to worker for rendering
+                    if (this.renderer) {
+                        const actualTileIndex = this.paintTile !== null ? this.paintTile : -1;
+                        
+                        this.renderer.handlePaintEvent(
+                                        this.currentLayer,
+                            mapPos.x,
+                            mapPos.y,
+                            actualTileIndex,
+                            this.brushSize
+                        );
+                    }
+                    
+                    // Also update local map data
+                    this.applyBrush(mapPos.x, mapPos.y, isErasing);
                 }
             }
+            
+            // Forward mouse down event to worker
+            if (this.renderer) {
+                this.renderer.handleMouseEvent('mousedown', {
+                    x: mouseX,
+                    y: mouseY,
+                    button: e.button,
+                    mapX: mapPos.x,
+                    mapY: mapPos.y
+                });
+            }
+        } else {
+            console.log('MapEditor: Click outside map bounds:', mapPos);
+        }
+    }
+
+    // Add new private method for handling pan offset updates
+    private updatePanOffset(deltaX: number, deltaY: number) {
+        this.offsetX += deltaX;
+        this.offsetY += deltaY;
+            
+        // Update renderer transform
+        if (this.renderer) {
+            this.renderer.updateTransform(this.offsetX, this.offsetY, this.zoomLevel);
         }
     }
 
     handleMouseMove(e: MouseEvent) {
-        const rect = this.canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
+        const { x: mouseX, y: mouseY } = this.calculateMouseCoordinates(e);
 
-        // Handle tile selection in palette
+        // Handle tile selection in palette (kept in main thread)
         if (this.selectionStartX !== null && this.selectionStartY !== null) {
             const tilePos = this.paletteManager?.getTileFromPaletteCoords(mouseX, mouseY);
             if (tilePos) {
@@ -721,9 +656,24 @@ export class ReactiveMapEditor {
                     // Update the single tile selection
                     const tileIndex = tilePos.tileY * this.tilemap.width + tilePos.tileX;
                     const brushId = `tile_${tileIndex}`;
+                    
+                    console.log('DEBUG - Palette Mouse Move Selection:', { 
+                        tileX: tilePos.tileX, 
+                        tileY: tilePos.tileY, 
+                        tileIndex, 
+                        brushId,
+                        tilemapWidth: this.tilemap.width
+                    });
+                    
                     this.brushManager?.selectBrush(brushId);
                     toolFSM.send('selectTile', tileIndex);
+                    
+                    // Set the paintTile value directly to ensure consistency
+                    this.paintTile = tileIndex;
                 }
+                
+                // Force a redraw of the palette
+                this.drawPalette();
             }
             return;
         }
@@ -732,10 +682,20 @@ export class ReactiveMapEditor {
         if (this.isPanning) {
             const deltaX = mouseX - this.lastPanX;
             const deltaY = mouseY - this.lastPanY;
-            this.offsetX += deltaX;
-            this.offsetY += deltaY;
+            this.updatePanOffset(deltaX, deltaY);
             this.lastPanX = mouseX;
             this.lastPanY = mouseY;
+            
+            // Forward panning info to worker
+            if (this.renderer) {
+                this.renderer.handleMouseEvent('mousemove', {
+                    x: mouseX,
+                    y: mouseY,
+                    isPanning: true,
+                    mapX: -1,
+                    mapY: -1
+                });
+            }
             return;
         }
 
@@ -743,6 +703,9 @@ export class ReactiveMapEditor {
         this.lastPanX = mouseX;
         this.lastPanY = mouseY;
 
+        // Get current map dimensions for boundary checks
+        const dimensions = this.getMapDimensions();
+        
         // Convert mouse coordinates to map coordinates
         const mapPos = screenToMap(
             mouseX,
@@ -756,46 +719,130 @@ export class ReactiveMapEditor {
         );
 
         // Update hover position for brush preview
-        if (isInMapBounds(mapPos.x, mapPos.y, this.getMapDimensions())) {
-            this.hoverX = mapPos.x;
-            this.hoverY = mapPos.y;
-        } else {
-            this.hoverX = -1;
-            this.hoverY = -1;
-        }
-
-        // Handle painting
-        if (this.isPainting) {
-            if (this.isFloodFillMode || toolFSM.context.currentTool === 'rectangle') {
-                // Skip during flood fill and rectangle drawing
-                return;
+        if (isInMapBounds(mapPos.x, mapPos.y, dimensions)) {
+            // Only update if the position has changed
+            if (this.hoverX !== mapPos.x || this.hoverY !== mapPos.y) {
+                this.hoverX = mapPos.x;
+                this.hoverY = mapPos.y;
+                
+                // Forward mouse move with hover info to worker
+                if (this.renderer) {
+                    this.renderer.handleMouseEvent('mousemove', {
+                        x: mouseX,
+                        y: mouseY,
+                        mapX: mapPos.x,
+                        mapY: mapPos.y
+                    });
+                }
+                
+                // Handle painting during mouse move
+                if (this.isPainting && isInMapBounds(mapPos.x, mapPos.y, dimensions)) {
+                    if (this.isFloodFillMode || toolFSM.context.currentTool === 'rectangle') {
+                        // Skip during flood fill and rectangle drawing
+                        return;
+                    }
+                    
+                    // Determine if we're erasing based on the paintTile value
+                    const isErasing = this.paintTile === -1;
+                    
+                    // Check if the current tile already has the value we're trying to paint
+                    // Only paint if the value is different to avoid redundant updates
+                    const currentValue = this.mapData[this.currentLayer][mapPos.y][mapPos.x];
+                    const newValue = isErasing ? -1 : this.paintTile;
+                    
+                    if (currentValue !== newValue) {
+                        // Log the current painting state for debugging
+                        console.log('Painting during mouse move:', { 
+                            x: mapPos.x, 
+                            y: mapPos.y, 
+                            isErasing, 
+                            paintTile: this.paintTile,
+                            selectedBrushId: this.brushManager?.getSelectedBrush()?.id,
+                            toolFSMSelectedTile: toolFSM.context.selectedTile,
+                            currentValue,
+                            newValue
+                        });
+                        
+                        // Forward painting to worker
+                        if (this.renderer) {
+                            const actualTileIndex = this.paintTile !== null ? this.paintTile : -1;
+                            
+                            this.renderer.handlePaintEvent(
+                                this.currentLayer,
+                                mapPos.x,
+                                mapPos.y,
+                                actualTileIndex,
+                                this.brushSize
+                            );
+                        }
+                        
+                        // Also update local map data
+                        this.applyBrush(mapPos.x, mapPos.y, isErasing);
+                    }
+                }
             }
-            
-            this.applyBrush(mapPos.x, mapPos.y, this.paintTile === -1);
+        } else {
+            if (this.hoverX !== -1 || this.hoverY !== -1) {
+                this.hoverX = -1;
+                this.hoverY = -1;
+                
+                // Forward mouse move with invalid hover info to worker
+                if (this.renderer) {
+                    this.renderer.handleMouseEvent('mousemove', {
+                        x: mouseX,
+                        y: mouseY,
+                        mapX: -1,
+                        mapY: -1
+                    });
+                }
+            }
         }
     }
 
-    handleMouseUp() {
+    handleMouseUp(e?: MouseEvent) {
+        // If we have event coordinates, calculate them properly
+        let mouseX = 0;
+        let mouseY = 0;
+        let mapX = -1;
+        let mapY = -1;
+        
+        if (e) {
+            const coords = this.calculateMouseCoordinates(e);
+            mouseX = coords.x;
+            mouseY = coords.y;
+            
+            // Convert mouse coordinates to map coordinates
+            const mapPos = screenToMap(
+                mouseX,
+                mouseY,
+                this.offsetX,
+                this.offsetY,
+                this.zoomLevel,
+                this.tilemap.tileWidth,
+                this.tilemap.tileHeight,
+                this.brushSize % 2 === 0
+            );
+            
+            mapX = mapPos.x;
+            mapY = mapPos.y;
+        }
+        
         // Handle tile selection completion
         if (this.selectionStartX !== null && this.selectionStartY !== null) {
-            if (this.isSelectingTiles) {
-                // If we were selecting (dragging), create a brush
-                console.log('Completing tile selection');
-                this.createTemporaryBrushFromSelection();
-            } else {
-                // If we just clicked (no drag), select the tile
-                const tileIndex = this.selectionStartY * this.tilemap.width + this.selectionStartX;
-                const brushId = `tile_${tileIndex}`;
-                this.brushManager?.selectBrush(brushId);
-                toolFSM.send('selectTile', tileIndex);
-            }
-            // Reset selection state
-            this.isSelectingTiles = false;
-            this.selectionStartX = null;
-            this.selectionStartY = null;
-            this.selectionEndX = null;
-            this.selectionEndY = null;
+            // Tile selection handling - stay in main thread
+            // ... existing selection code ...
             return;
+        }
+
+        // Forward mouse up to worker
+        if (this.renderer) {
+            this.renderer.handleMouseEvent('mouseup', {
+                x: mouseX,
+                y: mouseY,
+                mapX,
+                mapY,
+                isPanning: this.isPanning
+            });
         }
 
         // Handle rectangle drawing completion
@@ -813,52 +860,21 @@ export class ReactiveMapEditor {
             const width = endX - startX + 1;
             const height = endY - startY + 1;
 
-            const selectedBrush = this.brushManager?.getSelectedBrush();
-            if (this.isCustomBrushMode && selectedBrush && !selectedBrush.isBuiltIn) {
-                // Apply custom brush pattern to rectangle
-                const { tiles, width: brushWidth, height: brushHeight } = selectedBrush;
-                const pattern = calculateBrushPattern(
-                    { x: startX, y: startY, width, height },
-                    { width: brushWidth, height: brushHeight },
-                    this.useWorldAlignedRepeat
+            // Forward rectangle completion to worker
+                    if (this.renderer) {
+                const actualTileIndex = this.paintTile !== null ? this.paintTile : -1;
+                
+                this.renderer.handlePaintRegion(
+                                this.currentLayer,
+                    startX,
+                    startY,
+                            width,
+                    height,
+                    actualTileIndex
                 );
-
-                for (let ty = 0; ty < height; ty++) {
-                    for (let tx = 0; tx < width; tx++) {
-                        const worldX = startX + tx;
-                        const worldY = startY + ty;
-
-                        if (isInMapBounds(worldX, worldY, this.getMapDimensions())) {
-                            const { sourceX, sourceY } = pattern[ty][tx];
-                            const tileIndex = tiles[sourceY][sourceX];
-                            if (tileIndex !== -1) {
-                                if (this.mapData[this.currentLayer][worldY][worldX] !== tileIndex) {
-                                    this.mapData[this.currentLayer][worldY][worldX] = tileIndex;
-                                    this.hasModifiedDuringPaint = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Fill rectangle with selected tile
-                const selectedBrush = this.brushManager?.getSelectedBrush();
-                for (let y = startY; y <= endY; y++) {
-                    for (let x = startX; x <= endX; x++) {
-                        if (isInMapBounds(x, y, this.getMapDimensions())) {
-                            const newTile = this.paintTile === -1 ? -1 : 
-                                (selectedBrush?.isBuiltIn ? parseInt(selectedBrush.id.replace('tile_', '')) : toolFSM.context.selectedTile);
-                            if (this.mapData[this.currentLayer][y][x] !== newTile) {
-                                this.mapData[this.currentLayer][y][x] = newTile;
-                                this.hasModifiedDuringPaint = true;
-                            }
-                        }
-                    }
-                }
             }
-
-            this.isDrawingRectangle = false;
-            toolFSM.send('stopRectangle');
+            
+            // ... existing rectangle code ...
         }
 
         // Reset rectangle drawing state
@@ -872,63 +888,20 @@ export class ReactiveMapEditor {
             this.hoverX >= 0 && 
             this.hoverY >= 0) {
             
-            let radiusX = Math.abs(this.hoverX - this.ellipseStartX);
-            let radiusY = Math.abs(this.hoverY - this.ellipseStartY);
-
-            // If shift is pressed, make it a perfect circle by using the larger radius
-            if (this.isShiftPressed) {
-                const maxRadius = Math.max(radiusX, radiusY);
-                radiusX = maxRadius;
-                radiusY = maxRadius;
+            // Forward ellipse completion to worker
+                        if (this.renderer) {
+                this.renderer.handleUIStateChange('drawingComplete', {
+                    type: 'ellipse',
+                    startX: this.ellipseStartX,
+                    startY: this.ellipseStartY,
+                    endX: this.hoverX,
+                    endY: this.hoverY,
+                    currentLayer: this.currentLayer,
+                    tileIndex: this.paintTile
+                });
             }
-
-            const ellipsePoints = getEllipsePoints(
-                this.ellipseStartX,
-                this.ellipseStartY,
-                radiusX,
-                radiusY
-            );
             
-            const selectedBrush = this.brushManager?.getSelectedBrush();
-            if (selectedBrush) {
-                if (this.isCustomBrushMode && !selectedBrush.isBuiltIn) {
-                    // Apply brush pattern to all ellipse points
-                    const result = this.brushManager?.applyBrushToPoints(
-                        this.mapData[this.currentLayer],
-                        ellipsePoints,
-                        selectedBrush,
-                        { useWorldAlignedRepeat: this.useWorldAlignedRepeat }
-                    );
-                    if (result?.modified) {
-                        this.hasModifiedDuringPaint = true;
-                    }
-                } else {
-                    // Regular brush application for built-in brushes
-                    for (const point of ellipsePoints) {
-                        if (isInMapBounds(point.x, point.y, this.getMapDimensions())) {
-                            this.brushManager?.applyBrush(
-                                this.mapData[this.currentLayer],
-                                point.x,
-                                point.y,
-                                1,  // Use size 1 for ellipse points
-                                { useWorldAlignedRepeat: this.useWorldAlignedRepeat }
-                            );
-                            this.hasModifiedDuringPaint = true;
-                        }
-                    }
-                }
-            } else {
-                // Erase ellipse points
-                for (const point of ellipsePoints) {
-                    if (isInMapBounds(point.x, point.y, this.getMapDimensions())) {
-                        this.mapData[this.currentLayer][point.y][point.x] = -1;
-                        this.hasModifiedDuringPaint = true;
-                    }
-                }
-            }
-
-            this.isDrawingEllipse = false;
-            toolFSM.send('stopEllipse');
+            // ... existing ellipse code ...
         }
 
         // Reset ellipse drawing state
@@ -981,7 +954,85 @@ export class ReactiveMapEditor {
 
     // Brush application
     private applyBrush(mapX: number, mapY: number, isErasing: boolean = false) {
-        if (!this.brushManager) return;
+        if (!this.brushManager || !this.renderer || !this.sharedMapData) {
+            console.warn('MapEditor: Missing brushManager, renderer, or sharedMapData');
+            return;
+        }
+
+        // Ensure coordinates are within map bounds
+        const dimensions = this.getMapDimensions();
+        if (!isInMapBounds(mapX, mapY, dimensions)) {
+            console.warn('MapEditor: Brush coordinates out of bounds:', { mapX, mapY, dimensions });
+            return;
+        }
+        
+        // Determine the tile value to apply
+        let tileValue: number;
+        if (isErasing) {
+            tileValue = -1; // Empty tile for erasing
+        } else if (this.paintTile !== null && this.paintTile >= 0) {
+            tileValue = this.paintTile;
+            
+            // Debug the tile value being used
+            console.log('DEBUG - Paint Tile Value:', {
+                paintTile: this.paintTile,
+                tileX: this.paintTile % this.tilemap.width,
+                tileY: Math.floor(this.paintTile / this.tilemap.width),
+                tilemapWidth: this.tilemap.width
+            });
+            
+            // Ensure we have a selected brush for non-erasing operations
+            const brushId = `tile_${tileValue}`;
+            if (!this.brushManager.getSelectedBrush() || this.brushManager.getSelectedBrush()?.id !== brushId) {
+                this.brushManager.selectBrush(brushId);
+                console.log('MapEditor: Selected brush for painting:', brushId);
+            }
+        } else {
+            const selectedBrush = this.brushManager.getSelectedBrush();
+            if (selectedBrush && selectedBrush.isBuiltIn) {
+                tileValue = parseInt(selectedBrush.id.replace('tile_', ''));
+                
+                // Debug the tile value from the selected brush
+                console.log('DEBUG - Selected Brush Tile Value:', {
+                    brushId: selectedBrush.id,
+                    tileValue,
+                    tileX: tileValue % this.tilemap.width,
+                    tileY: Math.floor(tileValue / this.tilemap.width),
+                    tilemapWidth: this.tilemap.width
+                });
+            } else {
+                tileValue = toolFSM.context.selectedTile;
+                
+                // Ensure we have a selected brush
+                if (tileValue >= 0 && (!selectedBrush || (selectedBrush.isBuiltIn && selectedBrush.id !== `tile_${tileValue}`))) {
+                    const brushId = `tile_${tileValue}`;
+                    this.brushManager.selectBrush(brushId);
+                    console.log('MapEditor: Selected brush from toolFSM tile:', brushId);
+                }
+            }
+        }
+        
+        console.log('MapEditor: Applying brush:', { 
+            mapX, 
+            mapY, 
+            isErasing, 
+            brushSize: this.brushSize,
+            tileValue,
+            paintTile: this.paintTile,
+            selectedBrushId: this.brushManager.getSelectedBrush()?.id,
+            toolFSMSelectedTile: toolFSM.context.selectedTile
+        });
+        
+        // Check the current value at the target position
+        const currentValue = this.mapData[this.currentLayer][mapY][mapX];
+        console.log('MapEditor: Current value at target position:', {
+            layer: this.currentLayer,
+            x: mapX,
+            y: mapY,
+            value: currentValue
+        });
+        
+        // Let the BrushManager handle the brush application
         const result = this.brushManager.applyBrush(
             this.mapData[this.currentLayer],
             mapX,
@@ -990,12 +1041,69 @@ export class ReactiveMapEditor {
             {
                 isErasing,
                 useWorldAlignedRepeat: this.useWorldAlignedRepeat,
-                isCustomBrush: this.isCustomBrushMode
+                forceModification: true  // Force modification for debugging
             }
         );
 
-        if (result?.modified) {
-            this.hasModifiedDuringPaint = true;
+        console.log('MapEditor: Brush application result:', result);
+
+        // Always update the renderer regardless of whether tiles were modified
+        this.hasModifiedDuringPaint = true;
+        
+        // Use the modified area from result if available, otherwise create one based on brush
+        const area = result && result.modifiedArea 
+            ? result.modifiedArea 
+            : getBrushArea(mapX, mapY, this.brushSize);
+        
+        console.log('MapEditor: Using area for update:', area);
+        
+        // Ensure the area is within map bounds to prevent issues
+        const clampedArea = {
+            x: Math.max(0, area.x),
+            y: Math.max(0, area.y),
+            width: Math.min(area.width, dimensions.width - Math.max(0, area.x)),
+            height: Math.min(area.height, dimensions.height - Math.max(0, area.y))
+        };
+        
+        // Only proceed if we have a valid area to update
+        if (clampedArea.width > 0 && clampedArea.height > 0) {
+            // Extract the actual data that needs to be updated
+            const tiles = this.mapData[this.currentLayer]
+                .slice(clampedArea.y, clampedArea.y + clampedArea.height)
+                .map(row => row.slice(clampedArea.x, clampedArea.x + clampedArea.width));
+            
+            console.log('MapEditor: Updating shared map data with tiles:', {
+                area: clampedArea,
+                tiles: tiles
+            });
+            
+            // Update the shared map data
+            this.sharedMapData.updateRegion(
+                this.currentLayer,
+                clampedArea.x,
+                clampedArea.y,
+                tiles
+            );
+            
+            // Update the renderer with the modified region
+            this.renderer.updateRegion(
+                this.currentLayer,
+                clampedArea,
+                tiles
+            );
+            
+            // Check if the value was actually changed
+            const newValue = this.mapData[this.currentLayer][mapY][mapX];
+            console.log('MapEditor: Value after brush application:', {
+                layer: this.currentLayer,
+                x: mapX,
+                y: mapY,
+                oldValue: currentValue,
+                newValue: newValue,
+                changed: currentValue !== newValue
+            });
+        } else {
+            console.warn('MapEditor: Invalid area after clamping:', clampedArea);
         }
     }
 
@@ -1006,32 +1114,32 @@ export class ReactiveMapEditor {
             return;
         }
 
+        const key = e.key.toLowerCase();
+        // Prevent default actions for arrow keys, space, and WASD
+        if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', ' ', 'w', 'a', 's', 'd'].includes(key)) {
+            e.preventDefault();
+        }
+
         // Handle shift key state
         if (e.key === 'Shift') {
-            e.preventDefault();
             this.isShiftPressed = true;
-            return;  // Return early for shift key
         }
 
         // Handle arrow keys for panning
         switch (e.key) {
             case 'ArrowLeft':
-                e.preventDefault();
                 this.keyPanState.left = true;
                 this.isKeyPanning = true;
                 break;
             case 'ArrowRight':
-                e.preventDefault();
                 this.keyPanState.right = true;
                 this.isKeyPanning = true;
                 break;
             case 'ArrowUp':
-                e.preventDefault();
                 this.keyPanState.up = true;
                 this.isKeyPanning = true;
                 break;
             case 'ArrowDown':
-                e.preventDefault();
                 this.keyPanState.down = true;
                 this.isKeyPanning = true;
                 break;
@@ -1039,7 +1147,6 @@ export class ReactiveMapEditor {
 
         // Check for number keys (0-9) for layer selection
         if (/^[0-9]$/.test(e.key)) {
-            e.preventDefault();
             const layer = e.key === '0' ? 9 : parseInt(e.key) - 1;
             // Only select layer if it's visible
             if (layer >= 0 && layer < this.MAX_LAYERS && layerFSM.context.layerVisibility[layer]) {
@@ -1050,98 +1157,169 @@ export class ReactiveMapEditor {
 
         // Handle section key for all layers toggle
         if (e.key === '§') {
-            e.preventDefault();
             this.currentLayer = this.currentLayer === -1 ? 0 : -1;
             return;
         }
 
-        switch (e.key.toLowerCase()) {
+        // Handle ESC key
+        if (key === 'escape') {
+            // Cancel drawing operations
+            if (this.isDrawingEllipse || this.isDrawingRectangle) {
+                this.isDrawingEllipse = false;
+                this.isDrawingRectangle = false;
+                this.ellipseStartX = this.ellipseStartY = null;
+                this.rectangleStartX = this.rectangleStartY = null;
+                toolFSM.send('cancelShape');
+                
+                // Notify worker to clear the preview
+                if (this.renderer) {
+                    this.renderer.clearBrushPreview();
+                }
+            }
+            
+            // Also cancel tile selection
+            if (this.isSelectingTiles) {
+                this.isSelectingTiles = false;
+                this.selectionStartX = this.selectionStartY = null;
+                this.selectionEndX = this.selectionEndY = null;
+                
+                // Force a redraw of the palette
+                this.drawPalette();
+            }
+            
+            return;
+        }
+
+        // Handle other tool shortcuts
+        switch (key) {
             case 'z':
                 if (e.ctrlKey || e.metaKey) {
                     if (e.shiftKey) {
-                        e.preventDefault();
                         this.redo();
                     } else {
-                        e.preventDefault();
                         this.undo();
                     }
                 } else {
-                    e.preventDefault();
                     this.setBrushSize(Math.max(1, this.brushSize - 1));
                 }
                 break;
             case ' ':
-                e.preventDefault();
                 this.centerMap();
                 break;
             case 'r':
                 if (!e.ctrlKey && !e.metaKey) {
-                    e.preventDefault();
                     toolFSM.send('selectTool', 'rectangle');
                 }
                 break;
             case 'f':
-                e.preventDefault();
+            case 'g':
                 toolFSM.send('selectTool', this.isFloodFillMode ? 'brush' : 'fill');
                 break;
-            case 'g':
-                e.preventDefault();
-                toolFSM.send('selectTool', 'fill');
-                break;
             case 'b':
-                e.preventDefault();
                 toolFSM.send('selectTool', 'brush');
                 break;
             case 'x':
-                e.preventDefault();
                 this.setBrushSize(this.brushSize + 1);
-                break;
-            case 'w':
-                e.preventDefault();
-                this.navigateBrushGrid('up');
-                break;
-            case 's':
-                e.preventDefault();
-                this.navigateBrushGrid('down');
-                break;
-            case 'a':
-                e.preventDefault();
-                this.navigateBrushGrid('left');
-                break;
-            case 'd':
-                e.preventDefault();
-                this.navigateBrushGrid('right');
-                break;
-            case 'escape':
-                e.preventDefault();
-                if (this.isSelectingTiles) {
-                    // Cancel tile selection
-                    this.isSelectingTiles = false;
-                    this.selectionStartX = null;
-                    this.selectionStartY = null;
-                    this.selectionEndX = null;
-                    this.selectionEndY = null;
-                } else {
-                    this.cancelRectangleDrawing();
-                    this.cancelEllipseDrawing();
-                }
                 break;
             case 'e':
                 if (!e.ctrlKey && !e.metaKey) {
-                    e.preventDefault();
                     toolFSM.send('selectTool', 'ellipse');
                 }
                 break;
         }
+
+        // WASD for tile palette navigation
+        if (this.paletteManager && this.brushManager && !e.ctrlKey && !e.metaKey) {
+            // Only process WASD keys for palette navigation
+            if (!['w', 'a', 's', 'd'].includes(key)) {
+                // Skip non-WASD keys for palette navigation
+                this.forwardKeyEvent(e);
+                return;
+            }
+
+            // Get the currently selected brush
+            const selectedBrush = this.brushManager.getSelectedBrush();
+            if (!selectedBrush) {
+                this.forwardKeyEvent(e);
+                return;
+            }
+            
+            // Log the current selection before navigation
+            console.log('WASD Navigation - Current selection:', {
+                brushId: selectedBrush.id,
+                isBuiltIn: selectedBrush.isBuiltIn,
+                toolFSMSelectedTile: toolFSM.context.selectedTile
+            });
+            
+            // Map WASD keys to directions
+            let direction: 'up' | 'down' | 'left' | 'right';
+            switch (key) {
+                case 'w': direction = 'up'; break;
+                case 'a': direction = 'left'; break;
+                case 's': direction = 'down'; break;
+                case 'd': direction = 'right'; break;
+                default: 
+                    this.forwardKeyEvent(e);
+                    return;
+            }
+            
+            // Use the new navigateBrushGrid method to find the next brush
+            const nextBrushId = this.paletteManager.navigateBrushGrid(selectedBrush.id, direction);
+            
+            // Update the selection if a new brush was found
+            if (nextBrushId && this.brushManager) {
+                const brush = this.brushManager.getBrush(nextBrushId);
+                if (brush) {
+                    this.brushManager.selectBrush(nextBrushId);
+                    
+                    // If it's a built-in brush, update the selected tile
+                    if (brush.isBuiltIn) {
+                        const tileId = parseInt(brush.id.replace('tile_', ''));
+                        toolFSM.send('selectTile', tileId);
+                        
+                        // Also update this.paintTile to ensure consistency
+                        this.paintTile = tileId;
+                        
+                        // Also update this.isCustomBrushMode
+                        this.isCustomBrushMode = false;
+                        
+                        // Log the new selection
+                        console.log('WASD Navigation - Selected built-in brush:', {
+                            brushId: nextBrushId,
+                            tileId: tileId,
+                            paintTile: this.paintTile,
+                            toolFSMSelectedTile: tileId
+                        });
+                    } else {
+                        // It's a custom brush
+                        this.isCustomBrushMode = true;
+                        
+                        // Log the new selection
+                        console.log('WASD Navigation - Selected custom brush:', {
+                            brushId: nextBrushId,
+                            isCustomBrushMode: this.isCustomBrushMode
+                        });
+                    }
+                    
+                    // Redraw the palette
+                    this.drawPalette();
+                }
+            }
+        }
+        
+        this.forwardKeyEvent(e);
+        return;
     }
 
     handleKeyUp(e: KeyboardEvent) {
+        const key = e.key.toLowerCase();
+        
         // Always handle shift key state
         if (e.key === 'Shift') {
             this.isShiftPressed = false;
-            return;  // Return early for shift key
         }
-
+        
+        // Handle arrow keys for panning
         switch (e.key) {
             case 'ArrowLeft':
                 this.keyPanState.left = false;
@@ -1156,97 +1334,23 @@ export class ReactiveMapEditor {
                 this.keyPanState.down = false;
                 break;
         }
-
+        
         // Check if any arrow keys are still pressed
         this.isKeyPanning = Object.values(this.keyPanState).some(value => value);
+        
+        // Forward key events to the worker
+                    if (this.renderer) {
+            this.renderer.handleKeyEvent('keyup', {
+                key,
+                ctrlKey: e.ctrlKey,
+                shiftKey: e.shiftKey,
+                altKey: e.altKey,
+                metaKey: e.metaKey
+            });
+        }
     }
 
-    // Map operations
-    resizeMap(newWidth: number, newHeight: number, alignment: ResizeAlignment = 'middle-center') {
-        // Validate dimensions
-        if (!validateMapDimensions(newWidth, newHeight)) {
-            throw new Error('Map dimensions must be positive numbers');
-        }
-
-        // Store the old map data (deep copy)
-        const oldMap = cloneMapData(this.mapData);
-        const oldDimensions = { width: oldMap[0][0].length, height: oldMap[0].length };
-
-        // Create new map with new dimensions
-        const newMap = createEmptyMap(newWidth, newHeight, this.MAX_LAYERS);
-
-        // Calculate offsets based on alignment
-        let offsetX = 0;
-        let offsetY = 0;
-
-        // Calculate horizontal offset
-        switch(true) {
-            case alignment.includes('left'):
-                offsetX = 0;
-                break;
-            case alignment.includes('center'):
-                offsetX = Math.floor((newWidth - oldDimensions.width) / 2);
-                break;
-            case alignment.includes('right'):
-                offsetX = newWidth - oldDimensions.width;
-                break;
-        }
-
-        // Calculate vertical offset
-        switch(true) {
-            case alignment.includes('top'):
-                offsetY = 0;
-                break;
-            case alignment.includes('middle'):
-                offsetY = Math.floor((newHeight - oldDimensions.height) / 2);
-                break;
-            case alignment.includes('bottom'):
-                offsetY = newHeight - oldDimensions.height;
-                break;
-        }
-
-        // Ensure offsets don't cause content loss when shrinking
-        if (newWidth < oldDimensions.width) {
-            if (alignment.includes('center')) {
-                offsetX = Math.floor((newWidth - oldDimensions.width) / 2);
-            } else if (alignment.includes('right')) {
-                offsetX = newWidth - oldDimensions.width;
-            }
-            offsetX = Math.max(-(oldDimensions.width - newWidth), Math.min(0, offsetX));
-        }
-
-        if (newHeight < oldDimensions.height) {
-            if (alignment.includes('middle')) {
-                offsetY = Math.floor((newHeight - oldDimensions.height) / 2);
-            } else if (alignment.includes('bottom')) {
-                offsetY = newHeight - oldDimensions.height;
-            }
-            offsetY = Math.max(-(oldDimensions.height - newHeight), Math.min(0, offsetY));
-        }
-
-        // Copy existing data to new map
-        for (let layer = 0; layer < this.MAX_LAYERS; layer++) {
-            for (let y = 0; y < oldDimensions.height; y++) {
-                for (let x = 0; x < oldDimensions.width; x++) {
-                    const newX = x + offsetX;
-                    const newY = y + offsetY;
-                    
-                    // Only copy if the new position is within bounds
-                    if (isInMapBounds(newX, newY, { width: newWidth, height: newHeight })) {
-                        newMap[layer][newY][newX] = oldMap[layer][y][x];
-                    }
-                }
-            }
-        }
-
-        // Save current state to undo stack and apply new state
-        this.undoStack.push(cloneMapData(this.mapData));
-        this.mapData = newMap;
-        this.redoStack = [];
-        this.centerMap();
-    }
-
-    newMap(width: number, height: number) {
+    async newMap(width: number, height: number) {
         if (!validateMapDimensions(width, height)) {
             throw new Error('Map dimensions must be positive numbers');
         }
@@ -1257,7 +1361,28 @@ export class ReactiveMapEditor {
         // Create and apply new map
         this.mapData = createEmptyMap(width, height, this.MAX_LAYERS);
         this.redoStack = [];
-        this.centerMap();
+
+        // Reset view transform
+        this.offsetX = 0;
+        this.offsetY = 0;
+
+        // Reinitialize the renderer with new dimensions
+        if (this.renderer) {
+            this.renderer.updateTransform(this.offsetX, this.offsetY, this.zoomLevel);
+            await this.renderer.initialize(
+                width,
+                height,
+                this.tilemap.tileWidth,
+                this.tilemap.tileHeight,
+                this.tilemap.spacing,
+                this.tilemapUrl,
+                width * this.tilemap.tileWidth, // Canvas width
+                height * this.tilemap.tileHeight, // Canvas height
+                this.mapData
+            );
+            this.centerMap();
+            this.renderer.redrawAll();
+        }
     }
 
     // Export/Import
@@ -1341,6 +1466,22 @@ export class ReactiveMapEditor {
             // Apply new map data
             this.mapData = unpackedData.slice(0, this.MAX_LAYERS);
             this.redoStack = [];
+
+            // Reinitialize the renderer with new map data
+            if (this.renderer) {
+                await this.renderer.initialize(
+                    this.mapData[0][0].length,
+                    this.mapData[0].length,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.tilemap.spacing,
+                    this.tilemapUrl,
+                    this.canvas.width,  // Use current canvas width
+                    this.canvas.height, // Use current canvas height
+                    this.mapData
+                );
+            }
+
             this.centerMap();
         } catch (error) {
             console.error('Failed to unpack map data:', error);
@@ -1492,7 +1633,7 @@ export class ReactiveMapEditor {
     }
 
     // Undo/Redo methods
-    undo() {
+    async undo() {
         if (this.undoStack.length > 0) {
             // Save current state to redo stack
             this.redoStack.push(cloneMapData(this.mapData));
@@ -1500,10 +1641,32 @@ export class ReactiveMapEditor {
             // Pop and apply the last state from undo stack
             const previousState = this.undoStack.pop()!;
             this.mapData = cloneMapData(previousState);
+
+            // Reset view transform
+            this.offsetX = 0;
+            this.offsetY = 0;
+
+            // Update renderer with the new state
+            if (this.renderer) {
+                this.renderer.updateTransform(this.offsetX, this.offsetY, this.zoomLevel);
+                await this.renderer.initialize(
+                    this.mapData[0][0].length,
+                    this.mapData[0].length,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.tilemap.spacing,
+                    this.tilemapUrl,
+                    this.canvas.width,  // Use current canvas width
+                    this.canvas.height, // Use current canvas height
+                    this.mapData
+                );
+                this.centerMap();
+                this.renderer.redrawAll();
+            }
         }
     }
 
-    redo() {
+    async redo() {
         if (this.redoStack.length > 0) {
             // Save current state to undo stack
             this.undoStack.push(cloneMapData(this.mapData));
@@ -1511,174 +1674,27 @@ export class ReactiveMapEditor {
             // Pop and apply the last state from redo stack
             const nextState = this.redoStack.pop()!;
             this.mapData = cloneMapData(nextState);
-        }
-    }
 
-    private navigateBrushGrid(direction: 'up' | 'down' | 'left' | 'right') {
-        if (!this.brushManager || !this.paletteManager) return;
-        const selectedBrush = this.brushManager.getSelectedBrush();
-        if (!selectedBrush) {
-            this.brushManager.selectBrush('tile_0');
-            return;
-        }
+            // Reset view transform
+            this.offsetX = 0;
+            this.offsetY = 0;
 
-        if (selectedBrush.isBuiltIn) {
-            const currentIndex = parseInt(selectedBrush.id.replace('tile_', ''));
-            const tilesPerRow = this.tilemap.width;
-            const totalTiles = this.brushManager.getBuiltInBrushes().length;
-            const customBrushes = this.brushManager.getCustomBrushes();
-
-            switch (direction) {
-                case 'up': {
-                    const upIndex = currentIndex - tilesPerRow;
-                    if (upIndex >= 0) {
-                        this.brushManager.selectBrush(`tile_${upIndex}`);
-                    } else if (customBrushes.length > 0) {
-                        // Wrap to last row of custom brushes
-                        const currentX = this.paletteManager.getBrushCenterX(selectedBrush.id);
-                        const lastRow = Math.max(...customBrushes.map(b => {
-                            const pos = this.paletteManager?.getBrushRowAndColumn(b.id);
-                            return pos ? pos.row : 0;
-                        }));
-                        const nearestBrushId = this.paletteManager?.findNearestBrushInRow(currentX, lastRow);
-                        if (nearestBrushId) {
-                            this.brushManager.selectBrush(nearestBrushId);
-                        }
-                    } else {
-                        // Wrap to bottom row of tilemap
-                        const bottomRowIndex = Math.floor((totalTiles - 1) / tilesPerRow) * tilesPerRow + (currentIndex % tilesPerRow);
-                        if (bottomRowIndex < totalTiles) {
-                            this.brushManager.selectBrush(`tile_${bottomRowIndex}`);
-                        }
-                    }
-                    break;
-                }
-                case 'down': {
-                    const downIndex = currentIndex + tilesPerRow;
-                    if (downIndex < totalTiles) {
-                        this.brushManager.selectBrush(`tile_${downIndex}`);
-                    } else if (customBrushes.length > 0) {
-                        // Move to custom brush at similar X position
-                        const currentX = this.paletteManager.getBrushCenterX(selectedBrush.id);
-                        const nearestCustomBrushId = this.paletteManager.findNearestCustomBrush(currentX);
-                        if (nearestCustomBrushId) {
-                            this.brushManager.selectBrush(nearestCustomBrushId);
-                        }
-                    } else {
-                        // Wrap to top row of tilemap
-                        const topRowIndex = currentIndex % tilesPerRow;
-                        this.brushManager.selectBrush(`tile_${topRowIndex}`);
-                    }
-                    break;
-                }
-                case 'left': {
-                    const nextIndex = currentIndex - 1;
-                    if (nextIndex >= 0) {
-                        this.brushManager.selectBrush(`tile_${nextIndex}`);
-                    } else {
-                        // Wrap to last row of custom brushes
-                        const currentY = this.paletteManager?.getBrushCenterY(selectedBrush.id);
-                        const customBrushes = this.brushManager.getCustomBrushes();
-                        const lastRow = Math.max(...customBrushes.map(b => {
-                            const pos = this.paletteManager?.getBrushRowAndColumn(b.id);
-                            return pos ? pos.row : 0;
-                        }));
-                        const nearestBrushId = this.paletteManager.findNearestBrushInRow(0, currentY);
-                        if (nearestBrushId) {
-                            this.brushManager.selectBrush(nearestBrushId);
-                        }
-                    }
-                    break;
-                }
-                case 'right': {
-                    const nextIndex = currentIndex + 1;
-                    if (nextIndex < totalTiles) {
-                        this.brushManager.selectBrush(`tile_${nextIndex}`);
-                    } else {
-                        // Wrap to first row of custom brushes
-                        const currentY = this.paletteManager.getBrushCenterY(selectedBrush.id);
-                        const customBrushes = this.brushManager.getCustomBrushes();
-                        const firstRow = Math.min(...customBrushes.map(b => {
-                            const pos = this.paletteManager?.getBrushRowAndColumn(b.id);
-                            return pos ? pos.row : 0;
-                        }));
-                        const nearestBrushId = this.paletteManager.findNearestBrushInRow(this.tilemap.width - 1, currentY);
-                        if (nearestBrushId) {
-                            this.brushManager.selectBrush(nearestBrushId);
-                        }
-                    }
-                    break;
-                }
-            }
-        } else {
-            // Navigate through custom brushes
-            const customBrushes = this.brushManager.getCustomBrushes();
-            const currentIndex = customBrushes.findIndex(b => b.id === selectedBrush.id);
-            if (currentIndex === -1) return;
-
-            const position = this.paletteManager.getBrushRowAndColumn(selectedBrush.id);
-            if (!position) return;
-
-            switch (direction) {
-                case 'up': {
-                    if (position.row > 0) {
-                        const currentPos = this.paletteManager.getBrushCenterPosition(selectedBrush.id);
-                        if (currentPos) {
-                            const nearestBrushId = this.paletteManager.findNearestBrushInRow(currentPos.x, position.row - 1);
-                            if (nearestBrushId) {
-                                this.brushManager.selectBrush(nearestBrushId);
-                            }
-                        }
-                    } else {
-                        // Move to tilemap when in first row
-                        const currentX = this.paletteManager.getBrushCenterX(selectedBrush.id);
-                        const nearestTileId = this.paletteManager.findNearestTile(currentX, 'up');
-                        if (nearestTileId) {
-                            this.brushManager.selectBrush(nearestTileId);
-                        }
-                    }
-                    break;
-                }
-                case 'down': {
-                    const lastRow = Math.max(...customBrushes.map(b => {
-                        const pos = this.paletteManager?.getBrushRowAndColumn(b.id);
-                        return pos ? pos.row : 0;
-                    }));
-                    if (position.row >= lastRow) {
-                        // Wrap to first row of map tiles
-                        const currentX = this.paletteManager.getBrushCenterX(selectedBrush.id);
-                        const nearestTileId = this.paletteManager.findNearestTile(currentX, 'down');
-                        if (nearestTileId) {
-                            this.brushManager.selectBrush(nearestTileId);
-                        }
-                    } else {
-                        const currentPos = this.paletteManager.getBrushCenterPosition(selectedBrush.id);
-                        if (currentPos) {
-                            const nearestBrushId = this.paletteManager.findNearestBrushInRow(currentPos.x, position.row + 1);
-                            if (nearestBrushId) {
-                                this.brushManager.selectBrush(nearestBrushId);
-                            }
-                        }
-                    }
-                    break;
-                }
-                case 'left':
-                    if (currentIndex > 0) {
-                        this.brushManager.selectBrush(customBrushes[currentIndex - 1].id);
-                    } else {
-                        const tilesPerRow = this.tilemap.width;
-                        const totalRows = Math.ceil(this.brushManager.getBuiltInBrushes().length / tilesPerRow);
-                        const rightmostTileIndex = Math.min((totalRows * tilesPerRow) - 1, this.brushManager.getBuiltInBrushes().length - 1);
-                        this.brushManager.selectBrush(`tile_${rightmostTileIndex}`);
-                    }
-                    break;
-                case 'right':
-                    if (currentIndex < customBrushes.length - 1) {
-                        this.brushManager.selectBrush(customBrushes[currentIndex + 1].id);
-                    } else {
-                        this.brushManager.selectBrush('tile_0');
-                    }
-                    break;
+            // Update renderer with the new state
+            if (this.renderer) {
+                this.renderer.updateTransform(this.offsetX, this.offsetY, this.zoomLevel);
+                await this.renderer.initialize(
+                    this.mapData[0][0].length,
+                    this.mapData[0].length,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight,
+                    this.tilemap.spacing,
+                    this.tilemapUrl,
+                    this.canvas.width,  // Use current canvas width
+                    this.canvas.height, // Use current canvas height
+                    this.mapData
+                );
+                this.centerMap();
+                this.renderer.redrawAll();
             }
         }
     }
@@ -1687,7 +1703,8 @@ export class ReactiveMapEditor {
     getMapDimensions(): MapDimensions {
         return {
             width: this.mapData[0][0].length,
-            height: this.mapData[0].length
+            height: this.mapData[0].length,
+            layers: this.mapData.length
         };
     }
 
@@ -1701,33 +1718,745 @@ export class ReactiveMapEditor {
             this.tilemap.tileWidth * this.zoomLevel,
             this.tilemap.tileHeight * this.zoomLevel
         );
+        
+        console.log('MapEditor: Centering map with values:', {
+            canvasWidth: this.canvas.width,
+            canvasHeight: this.canvas.height,
+            mapWidth: this.mapData[0][0].length,
+            mapHeight: this.mapData[0].length,
+            tileWidth: this.tilemap.tileWidth,
+            tileHeight: this.tilemap.tileHeight,
+            zoomLevel: this.zoomLevel,
+            centerX: center.x,
+            centerY: center.y
+        });
+        
         this.offsetX = center.x;
         this.offsetY = center.y;
+
+        // Update renderer transform after centering
+        if (this.renderer) {
+            console.log('MapEditor: Updating transform with:', {
+                offsetX: this.offsetX,
+                offsetY: this.offsetY,
+                zoomLevel: this.zoomLevel
+            });
+            this.renderer.updateTransform(this.offsetX, this.offsetY, this.zoomLevel);
+        }
+    }
+
+    // Resize the map to new dimensions
+    async resizeMap(newWidth: number, newHeight: number, alignment: ResizeAlignment = 'middle-center') {
+        if (!validateMapDimensions(newWidth, newHeight)) {
+            throw new Error('Map dimensions must be positive numbers');
+        }
+
+        console.log('MapEditor: Resizing map to', { 
+            newWidth, 
+            newHeight, 
+            alignment,
+            oldWidth: this.mapData[0][0].length,
+            oldHeight: this.mapData[0].length
+        });
+
+        // Save current state to undo stack
+        this.undoStack.push(cloneMapData(this.mapData));
+        
+        // Get current dimensions
+        const oldWidth = this.mapData[0][0].length;
+        const oldHeight = this.mapData[0].length;
+        
+        // Create a new map with the new dimensions
+        const newMapData = createEmptyMap(newWidth, newHeight, this.MAX_LAYERS);
+        
+        // Calculate offsets based on alignment
+        let offsetX = 0;
+        let offsetY = 0;
+        
+        // Parse the alignment string to determine horizontal and vertical alignment
+        const [verticalPart, horizontalPart] = alignment.split('-');
+        
+        // Handle horizontal alignment
+        switch (horizontalPart) {
+            case 'left':
+                offsetX = 0;
+                break;
+            case 'center':
+                offsetX = Math.floor((newWidth - oldWidth) / 2);
+                break;
+            case 'right':
+                offsetX = newWidth - oldWidth;
+                break;
+        }
+        
+        // Handle vertical alignment
+        switch (verticalPart) {
+            case 'top':
+                offsetY = 0;
+                break;
+            case 'middle':
+                offsetY = Math.floor((newHeight - oldHeight) / 2);
+                break;
+            case 'bottom':
+                offsetY = newHeight - oldHeight;
+                break;
+        }
+        
+        // Ensure offsets are within valid range
+        offsetX = Math.max(0, offsetX);
+        offsetY = Math.max(0, offsetY);
+        
+        console.log('MapEditor: Calculated offsets for resize:', { offsetX, offsetY });
+        
+        // Copy data from old map to new map, preserving as much content as possible
+        for (let layer = 0; layer < this.MAX_LAYERS; layer++) {
+            for (let y = 0; y < oldHeight; y++) {
+                if (y + offsetY >= newHeight) continue;
+                
+                for (let x = 0; x < oldWidth; x++) {
+                    if (x + offsetX >= newWidth) continue;
+                    
+                    // Copy the tile from old to new map
+                    newMapData[layer][y + offsetY][x + offsetX] = this.mapData[layer][y][x];
+                }
+            }
+        }
+        
+        // Apply the new map data
+        this.mapData = newMapData;
+        this.redoStack = [];  // Clear redo stack
+
+        // Create new shared map data with new dimensions
+        if (this.sharedMapData) {
+            console.log('MapEditor: Creating new SharedMapData with dimensions:', { 
+                width: newWidth, 
+                height: newHeight,
+                layers: this.MAX_LAYERS
+            });
+            
+            this.sharedMapData = new SharedMapData(
+                newWidth,
+                newHeight,
+                this.MAX_LAYERS,
+                this.mapData,
+                this.tilemap.tileWidth,
+                this.tilemap.tileHeight
+            );
+        }
+
+        // Update the renderer with the new map dimensions
+        if (this.renderer) {
+            // Reset transform to avoid issues
+            this.offsetX = 0;
+            this.offsetY = 0;
+            
+            console.log('MapEditor: Telling worker about new map dimensions');
+            
+            // Instead of reinitializing, send a special message to update dimensions
+            await this.renderer.updateMapDimensions(
+                newWidth,
+                newHeight,
+                this.sharedMapData ? this.sharedMapData.getBuffer() : undefined,
+                this.sharedMapData ? this.sharedMapData.getUpdateFlagsBuffer() : undefined
+            );
+            
+            // Update the transform after updating dimensions
+            this.renderer.updateTransform(this.offsetX, this.offsetY, this.zoomLevel);
+            
+            // Center the map and force a redraw
+            this.centerMap();
+            this.renderer.redrawAll();
+        }
+        
+        console.log('MapEditor: Map resized successfully');
+        return true;
     }
 
     // Initialize the editor
     async init() {
+        console.log('MapEditor: Initializing');
+        
         try {
+            // Load the tilemap first
             await this.tilemap.load();
+            
             // Initialize managers after tilemap is loaded
             this.brushManager = new BrushManager(this.tilemap);
             this.paletteManager = new PaletteManager(this.tilemap, this.brushManager);
+            
+            // Draw the palette immediately after tilemap is loaded
+            this.drawPalette();
+            
+            if (!this.canvas) {
+                console.warn('MapEditor: No canvas element');
+                return;
+            }
+
+            // Calculate the initial size for the canvas
+            const container = this.canvas.parentElement;
+            let initialWidth = 800;
+            let initialHeight = 600;
+            
+            if (container) {
+                const style = window.getComputedStyle(container);
+                initialWidth = container.clientWidth 
+                    - parseFloat(style.paddingLeft) 
+                    - parseFloat(style.paddingRight);
+                initialHeight = container.clientHeight 
+                    - parseFloat(style.paddingTop) 
+                    - parseFloat(style.paddingBottom);
+            }
+
+            // Set initial canvas styles and dimensions
+            this.canvas.style.width = '100%';
+            this.canvas.style.height = '100%';
+            this.canvas.width = initialWidth;
+            this.canvas.height = initialHeight;
+            
+            // Log initial canvas dimensions
+            this.logCanvasDimensions('Initial canvas dimensions');
+
+            // Initialize the renderer
+            this.renderer = new OptimizedRenderer(this.canvas);
+            
+            // Get map dimensions
+            const dimensions = this.getMapDimensions();
+            
+            // Create shared map data if not already created
+            if (!this.sharedMapData) {
+                this.sharedMapData = new SharedMapData(
+                    dimensions.width,
+                    dimensions.height,
+                    this.MAX_LAYERS,
+                    this.mapData,
+                    this.tilemap.tileWidth,
+                    this.tilemap.tileHeight
+                );
+            }
+            
+            // Create a promise that will resolve when worker initialization is complete
+            const initPromise = new Promise<void>((resolve) => {
+                if (this.renderer) {
+                    this.renderer.onInitComplete(() => {
+                        console.log('MapEditor: Worker initialization completed');
+                        resolve();
+                    });
+                } else {
+                    resolve(); // Resolve immediately if renderer is not available
+                }
+            });
+            
+            // Initialize the renderer with map dimensions, tile properties, and initial canvas size
+            await this.renderer.initialize(
+                dimensions.width,
+                dimensions.height,
+                this.tilemap.tileWidth,
+                this.tilemap.tileHeight,
+                this.tilemap.spacing,
+                this.tilemapUrl,
+                initialWidth,
+                initialHeight,
+                this.mapData,
+                this.sharedMapData.getBuffer() // Pass the shared buffer
+            );
+
+            // Wait for worker to complete initialization
+            await initPromise;
+
+            // Set initial transform - this must be done AFTER worker initialization
+            console.log('MapEditor: Setting initial transform');
+            this.renderer.updateTransform(0, 0, this.zoomLevel);
+
+            console.log('MapEditor: Initialized renderer with dimensions:', {
+                width: dimensions.width,
+                height: dimensions.height,
+                tileWidth: this.tilemap.tileWidth,
+                tileHeight: this.tilemap.tileHeight,
+                spacing: this.tilemap.spacing,
+                tilemapUrl: this.tilemapUrl,
+                mapDataSize: this.mapData.length,
+                canvasWidth: initialWidth,
+                canvasHeight: initialHeight
+            });
+
+            // Select first tile
+            toolFSM.send('selectTile', 0); // Use tile 0 as the initial selection
+            
+            // Also select the corresponding brush
+            if (this.brushManager) {
+                this.brushManager.selectBrush('tile_0');
+                console.log('MapEditor: Selected default brush tile_0');
+            }
+
+            // Set up layer visibility in the worker
+            for (let i = 0; i < this.MAX_LAYERS; i++) {
+                this.renderer.setLayerVisibility(i, layerFSM.context.layerVisibility[i]);
+            }
+
+            // Set initial grid visibility in the worker
+            this.renderer.setShowGrid(this.showGrid);
+
+            // Enable continuous animation for smooth rendering
+            this.renderer.setContinuousAnimation(true);
+
+            // Center the map AFTER worker initialization
+            console.log('MapEditor: Centering map after worker initialization');
             this.centerMap();
-            // Select first tile by default (only after tilemap is loaded)
-            toolFSM.send('selectTile', 0);
+
+            // Draw the palette
+            this.drawPalette();
+
+            // Start the animation loop for handling panning and other state updates
+            requestAnimationFrame(this.animationLoop.bind(this));
         } catch (error) {
-            console.error('Failed to load tilemap:', error);
+            console.error('MapEditor: Failed to initialize:', error);
         }
     }
 
     // Handle window resize
     resize() {
         const container = this.canvas.parentElement;
-        if (container) {
-            const bounds = container.getBoundingClientRect();
-            this.canvas.width = bounds.width;
-            this.canvas.height = bounds.height;
-            this.ctx.imageSmoothingEnabled = false;
+        if (!container) return;
+
+        // Get the computed style of the container
+        const style = window.getComputedStyle(container);
+        
+        // Log dimensions before resize
+        this.logCanvasDimensions('Before resize');
+        
+        // Calculate the content area by subtracting padding and borders
+        const width = container.clientWidth 
+            - parseFloat(style.paddingLeft) 
+            - parseFloat(style.paddingRight);
+        const height = container.clientHeight 
+            - parseFloat(style.paddingTop) 
+            - parseFloat(style.paddingBottom);
+
+        if (width <= 0 || height <= 0) {
+            console.warn('MapEditor: Parent container has zero or negative content area');
+            return;
+        }
+        
+        // Log the dimensions before changing anything
+        console.log('MapEditor: Resizing canvas', {
+            containerClientWidth: container.clientWidth,
+            containerClientHeight: container.clientHeight,
+            paddingLeft: parseFloat(style.paddingLeft),
+            paddingRight: parseFloat(style.paddingRight),
+            paddingTop: parseFloat(style.paddingTop),
+            paddingBottom: parseFloat(style.paddingBottom),
+            calculatedWidth: width,
+            calculatedHeight: height,
+            currentCanvasWidth: this.canvas.width,
+            currentCanvasHeight: this.canvas.height,
+            currentStyleWidth: this.canvas.style.width,
+            currentStyleHeight: this.canvas.style.height
+        });
+        
+        // Set canvas CSS size to match container's content area
+        this.canvas.style.width = '100%';
+        this.canvas.style.height = '100%';
+        
+        // Note: We don't set canvas.width and canvas.height directly anymore
+        // because the canvas has been transferred to the worker
+        // Instead, we notify the worker to resize the OffscreenCanvas
+        
+        // Log the dimensions after changing
+        console.log('MapEditor: Canvas resized', {
+            newStyleWidth: this.canvas.style.width,
+            newStyleHeight: this.canvas.style.height,
+            boundingClientRect: this.canvas.getBoundingClientRect()
+        });
+        
+        // Update renderer size and force a redraw
+        if (this.renderer) {
+            this.renderer.resize(width, height);
+            
+            // Update the transform to ensure proper alignment
+            this.renderer.updateTransform(this.offsetX, this.offsetY, this.zoomLevel);
+            
+            // Force a complete redraw to ensure everything is visible
+            this.renderer.redrawAll();
+        }
+
+        // Re-center the map after resize
+        this.centerMap();
+        
+        // Log dimensions after resize
+        this.logCanvasDimensions('After resize');
+
+        // Also resize the preview canvas
+        if (this.previewCanvas) {
+            this.previewCanvas.width = width;
+            this.previewCanvas.height = height;
+            
+            // Update position
+            const rect = this.canvas.getBoundingClientRect();
+            this.previewCanvas.style.left = `${rect.left}px`;
+            this.previewCanvas.style.top = `${rect.top}px`;
+            this.previewCanvas.style.width = `${rect.width}px`;
+            this.previewCanvas.style.height = `${rect.height}px`;
+            
+            // Reset image smoothing
+            if (this.previewCtx) {
+                this.previewCtx.imageSmoothingEnabled = false;
+            }
+        }
+        
+        // Redraw the palette
+        this.drawPalette();
+    }
+
+    destroy() {
+        // Clean up event listeners
+        if (this.canvas) {
+            this.canvas.removeEventListener('wheel', this.boundHandleWheel);
+            this.canvas.removeEventListener('mousedown', this.boundHandleMouseDown);
+            this.canvas.removeEventListener('mousemove', this.boundHandleMouseMove);
+            window.removeEventListener('mouseup', this.boundHandleMouseUp);
+            window.removeEventListener('keydown', this.boundHandleKeyDown);
+            window.removeEventListener('keyup', this.boundHandleKeyUp);
+            window.removeEventListener('resize', this.boundResize);
+        }
+
+        // Remove the preview canvas
+        if (this.previewCanvas && this.previewCanvas.parentElement) {
+            this.previewCanvas.parentElement.removeChild(this.previewCanvas);
+            this.previewCanvas = null;
+            this.previewCtx = null;
+        }
+        
+        // Remove the palette canvas
+        if (this.paletteCanvas && this.paletteCanvas.parentElement) {
+            this.paletteCanvas.parentElement.removeChild(this.paletteCanvas);
+            this.paletteCanvas = null;
+            this.paletteCtx = null;
+        }
+
+        // Clean up renderer
+        if (this.renderer) {
+            this.renderer.destroy();
+            this.renderer = null;
+        }
+    }
+
+    // Add a debug method to log canvas dimensions
+    private logCanvasDimensions(message: string = 'Canvas dimensions') {
+        if (!this.canvas) return;
+        
+        const container = this.canvas.parentElement;
+        if (!container) return;
+        
+        const style = window.getComputedStyle(container);
+        const rect = this.canvas.getBoundingClientRect();
+        
+        console.log(`MapEditor: ${message}`, {
+            canvasWidth: this.canvas.width,
+            canvasHeight: this.canvas.height,
+            canvasStyleWidth: this.canvas.style.width,
+            canvasStyleHeight: this.canvas.style.height,
+            canvasBoundingRect: rect,
+            containerWidth: container.clientWidth,
+            containerHeight: container.clientHeight,
+            containerPadding: {
+                left: parseFloat(style.paddingLeft),
+                right: parseFloat(style.paddingRight),
+                top: parseFloat(style.paddingTop),
+                bottom: parseFloat(style.paddingBottom)
+            },
+            containerStyle: {
+                width: style.width,
+                height: style.height,
+                position: style.position,
+                display: style.display
+            },
+            scaleFactors: {
+                x: this.canvas.width / rect.width,
+                y: this.canvas.height / rect.height
+            }
+        });
+    }
+
+    // Create a separate canvas for previews
+    private createPreviewCanvas() {
+        // Create a preview canvas for brush overlays
+        this.previewCanvas = document.createElement('canvas');
+        this.previewCanvas.style.position = 'absolute';
+        this.previewCanvas.style.pointerEvents = 'none'; // Make it transparent to mouse events
+        this.previewCanvas.style.zIndex = '10'; // Make sure it's above the main canvas
+        
+        // Make it the same size as the main canvas
+        this.previewCanvas.width = this.canvas.width;
+        this.previewCanvas.height = this.canvas.height;
+        
+        // Get the context for drawing previews
+        this.previewCtx = this.previewCanvas.getContext('2d')!;
+        this.previewCtx.imageSmoothingEnabled = false;
+        
+        // Add it to the DOM right after the main canvas
+        if (this.canvas.parentElement) {
+            this.canvas.parentElement.insertBefore(this.previewCanvas, this.canvas.nextSibling);
+            
+            // Position it over the main canvas
+            const rect = this.canvas.getBoundingClientRect();
+            this.previewCanvas.style.left = `${rect.left}px`;
+            this.previewCanvas.style.top = `${rect.top}px`;
+            this.previewCanvas.style.width = `${rect.width}px`;
+            this.previewCanvas.style.height = `${rect.height}px`;
+        }
+    }
+
+    // Create a separate canvas for the palette
+    private createPaletteCanvas() {
+        // Create a palette canvas
+        this.paletteCanvas = document.createElement('canvas');
+        this.paletteCanvas.style.position = 'absolute';
+        this.paletteCanvas.style.left = '10px';  // Position it on the left
+        this.paletteCanvas.style.top = '10px';   // with a small margin from the top
+        this.paletteCanvas.style.zIndex = '20';  // Make sure it's above everything else
+        this.paletteCanvas.style.background = '#333'; // Add background color
+        this.paletteCanvas.style.border = '1px solid #555'; // Add border
+        
+        // Set initial size - we'll adjust this based on content later
+        this.paletteCanvas.width = 300;  // Default width
+        this.paletteCanvas.height = 500; // Default height
+        
+        // Get the context for drawing the palette
+        this.paletteCtx = this.paletteCanvas.getContext('2d', { alpha: false })!; // Use non-alpha context for better performance
+        this.paletteCtx.imageSmoothingEnabled = false;
+        
+        // Add it to the DOM as a sibling to the main canvas
+        if (this.canvas.parentElement) {
+            this.canvas.parentElement.appendChild(this.paletteCanvas);
+        }
+        
+        // Add event listeners for palette interaction
+        this.paletteCanvas.addEventListener('mousedown', this.handlePaletteMouseDown.bind(this));
+        this.paletteCanvas.addEventListener('mousemove', this.handlePaletteMouseMove.bind(this));
+        this.paletteCanvas.addEventListener('mouseup', this.handlePaletteMouseUp.bind(this));
+        
+        // Also prevent context menu on the palette canvas
+        this.paletteCanvas.addEventListener('contextmenu', (e) => e.preventDefault());
+        
+        console.log('MapEditor: Created palette canvas');
+    }
+
+    // Handle mouse events on the palette canvas
+    private handlePaletteMouseDown(e: MouseEvent) {
+        if (!this.paletteManager) return;
+        
+        const rect = this.paletteCanvas!.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        console.log('MapEditor: Palette mouse down at', x, y);
+        
+        if (e.button === 0) { // Left click
+            // Get the tile position from the coordinates
+            const tilePos = this.paletteManager.getTileFromPaletteCoords(x, y);
+            if (tilePos) {
+                // Start tile selection
+                this.selectionStartX = tilePos.tileX;
+                this.selectionStartY = tilePos.tileY;
+                this.selectionEndX = tilePos.tileX;
+                this.selectionEndY = tilePos.tileY;
+                
+                // Select the single tile initially
+                const tileIndex = tilePos.tileY * this.tilemap.width + tilePos.tileX;
+                const brushId = `tile_${tileIndex}`;
+                
+                console.log('DEBUG - Palette Selection:', { 
+                    tileX: tilePos.tileX, 
+                    tileY: tilePos.tileY, 
+                    tileIndex, 
+                    brushId,
+                    tilemapWidth: this.tilemap.width,
+                    calculatedX: tileIndex % this.tilemap.width,
+                    calculatedY: Math.floor(tileIndex / this.tilemap.width)
+                });
+                
+                // Get the actual tile from the tilemap to verify it exists
+                const tileCanvas = this.tilemap.getTile(tileIndex);
+                if (tileCanvas) {
+                    console.log('DEBUG - Tile exists in tilemap:', { tileIndex });
+                } else {
+                    console.warn('DEBUG - Tile does NOT exist in tilemap:', { tileIndex });
+                }
+                
+                if (this.brushManager) {
+                    this.brushManager.selectBrush(brushId);
+                    this.isCustomBrushMode = false;
+                    
+                    // Set the paintTile value directly to ensure consistency
+                    this.paintTile = tileIndex;
+                }
+                
+                toolFSM.send('selectTile', tileIndex);
+                
+                // Redraw the palette to show the selection
+                this.drawPalette();
+            } else {
+                // Handle click on custom brushes or other elements
+                this.paletteManager.handlePaletteClick(x, y);
+            }
+        } else if (e.button === 2) { // Right click
+            this.paletteManager.handlePaletteRightClick(x, y);
+            // Prevent the context menu
+            e.preventDefault();
+        }
+    }
+
+    private handlePaletteMouseMove(e: MouseEvent) {
+        if (!this.paletteManager) return;
+        
+        const rect = this.paletteCanvas!.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        if (this.isSelectingTiles && this.selectionStartX !== null && this.selectionStartY !== null) {
+            const tilePos = this.paletteManager.getTileFromPaletteCoords(x, y);
+            if (tilePos) {
+                this.selectionEndX = tilePos.tileX;
+                this.selectionEndY = tilePos.tileY;
+                
+                // Only enter selection mode if we're selecting more than one tile
+                const width = Math.abs((this.selectionEndX || 0) - this.selectionStartX) + 1;
+                const height = Math.abs((this.selectionEndY || 0) - this.selectionStartY) + 1;
+                if (width > 1 || height > 1) {
+                    this.isSelectingTiles = true;
+                    // Clear the single tile selection when entering drag mode
+                    this.brushManager?.selectBrush(null);
+                } else {
+                    this.isSelectingTiles = false;
+                    // Update the single tile selection
+                    const tileIndex = tilePos.tileY * this.tilemap.width + tilePos.tileX;
+                    const brushId = `tile_${tileIndex}`;
+                    
+                    console.log('DEBUG - Palette Mouse Move Selection:', { 
+                        tileX: tilePos.tileX, 
+                        tileY: tilePos.tileY, 
+                        tileIndex, 
+                        brushId,
+                        tilemapWidth: this.tilemap.width
+                    });
+                    
+                    this.brushManager?.selectBrush(brushId);
+                    toolFSM.send('selectTile', tileIndex);
+                    
+                    // Set the paintTile value directly to ensure consistency
+                    this.paintTile = tileIndex;
+                }
+                
+                // Force a redraw of the palette
+                this.drawPalette();
+            }
+        }
+    }
+
+    private handlePaletteMouseUp(e: MouseEvent) {
+        if (!this.paletteManager) return;
+        
+        // If we've been selecting tiles, create a custom brush
+        if (this.isSelectingTiles && 
+            this.selectionStartX !== null && this.selectionStartY !== null &&
+            this.selectionEndX !== null && this.selectionEndY !== null) {
+            
+            // Create a custom brush from the selection
+            this.createTemporaryBrushFromSelection();
+            
+            // Reset selection state
+            this.isSelectingTiles = false;
+            this.selectionStartX = null;
+            this.selectionStartY = null;
+            this.selectionEndX = null;
+            this.selectionEndY = null;
+            
+            // Force a redraw of the palette
+            this.drawPalette();
+        }
+    }
+
+    // Main method to draw the palette
+    private drawPalette() {
+        if (!this.paletteCanvas || !this.paletteCtx || !this.paletteManager) {
+            console.warn('MapEditor: Cannot draw palette - missing canvas, context, or manager');
+            return;
+        }
+        
+        if (!this.tilemap.isLoaded()) {
+            console.warn('MapEditor: Cannot draw palette - tilemap not loaded');
+            
+            // Draw a loading message
+            this.paletteCtx.fillStyle = '#333';
+            this.paletteCtx.fillRect(0, 0, this.paletteCanvas.width, this.paletteCanvas.height);
+            this.paletteCtx.fillStyle = '#fff';
+            this.paletteCtx.font = '16px Arial';
+            this.paletteCtx.textAlign = 'center';
+            this.paletteCtx.fillText('Loading tilemap...', this.paletteCanvas.width / 2, 50);
+            return;
+        }
+        
+        console.log('MapEditor: Drawing palette with dimensions:', {
+            width: this.paletteCanvas.width,
+            height: this.paletteCanvas.height,
+            tilemapWidth: this.tilemap.width,
+            tilemapHeight: this.tilemap.height
+        });
+        
+        // Clear the canvas with background color
+        this.paletteCtx.fillStyle = '#333';
+        this.paletteCtx.fillRect(0, 0, this.paletteCanvas.width, this.paletteCanvas.height);
+        
+        // Draw the palette using the PaletteManager
+        this.paletteManager.drawPalette(this.paletteCtx);
+        
+        // Update the canvas size based on the palette height
+        const paletteHeight = this.paletteManager.getPaletteHeight();
+        const neededWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing) + 40;
+        
+        // Log the palette dimensions
+        console.log('MapEditor: Palette dimensions:', {
+            paletteHeight,
+            tilemapWidth: this.tilemap.width,
+            tilemapHeight: this.tilemap.height,
+            tileWidth: this.tilemap.tileWidth,
+            tileHeight: this.tilemap.tileHeight,
+            currentPaletteWidth: this.paletteCanvas.width,
+            neededWidth
+        });
+        
+        // Update the palette size if needed
+        if (neededWidth > 0 && this.paletteCanvas.width !== neededWidth) {
+            this.paletteCanvas.width = neededWidth;
+            // Need to reset context properties after canvas resize
+            this.paletteCtx.imageSmoothingEnabled = false;
+            // Redraw after resizing
+            this.paletteCtx.fillStyle = '#333';
+            this.paletteCtx.fillRect(0, 0, this.paletteCanvas.width, this.paletteCanvas.height);
+            this.paletteManager.drawPalette(this.paletteCtx);
+        }
+        
+        if (paletteHeight > 0 && this.paletteCanvas.height !== paletteHeight) {
+            this.paletteCanvas.height = paletteHeight;
+            // Need to reset context properties after canvas resize
+            this.paletteCtx.imageSmoothingEnabled = false;
+            // Redraw after resizing
+            this.paletteCtx.fillStyle = '#333';
+            this.paletteCtx.fillRect(0, 0, this.paletteCanvas.width, this.paletteCanvas.height);
+            this.paletteManager.drawPalette(this.paletteCtx);
+        }
+    }
+
+    // Helper to forward keyboard events to the worker
+    private forwardKeyEvent(e: KeyboardEvent) {
+        if (this.renderer) {
+            this.renderer.handleKeyEvent('keydown', {
+                key: e.key.toLowerCase(),
+                ctrlKey: e.ctrlKey,
+                shiftKey: e.shiftKey,
+                altKey: e.altKey,
+                metaKey: e.metaKey
+            });
         }
     }
 }

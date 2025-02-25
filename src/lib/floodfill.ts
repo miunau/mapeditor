@@ -4,56 +4,16 @@ interface Point {
     y: number;
 }
 
-/**
- * Get all neighboring points that could be part of the fill area
- * Uses a more sophisticated algorithm to determine connectivity
- */
-function getNeighbors(point: Point, layer: number[][], targetValue: number): Point[] {
-    const neighbors: Point[] = [];
-    const width = layer[0].length;
-    const height = layer.length;
-    
-    // Check all 8 surrounding positions
-    const directions = [
-        [-1, -1], [0, -1], [1, -1],  // Top row
-        [-1,  0],          [1,  0],   // Middle row
-        [-1,  1], [0,  1], [1,  1]    // Bottom row
-    ];
-    
-    for (const [dx, dy] of directions) {
-        const newX = point.x + dx;
-        const newY = point.y + dy;
-        
-        // Skip if out of bounds
-        if (newX < 0 || newX >= width || newY < 0 || newY >= height) {
-            continue;
-        }
+// Cache for recent flood fill results
+const fillCache = new Map<string, Point[]>();
+const MAX_CACHE_SIZE = 50; // Adjust based on memory constraints
 
-        // For diagonal neighbors, we need to check if there's a valid path
-        if (dx !== 0 && dy !== 0) {
-            // Check if either adjacent tile matches the target value
-            const hasHorizontalPath = layer[point.y][newX] === targetValue;
-            const hasVerticalPath = layer[newY][point.x] === targetValue;
-            
-            // Add the diagonal neighbor if:
-            // 1. It matches the target value AND
-            // 2. Either there's a horizontal or vertical path to it
-            if (layer[newY][newX] === targetValue && (hasHorizontalPath || hasVerticalPath)) {
-                neighbors.push({ x: newX, y: newY });
-            }
-        } else {
-            // For orthogonal neighbors (up, down, left, right), just check if they match
-            if (layer[newY][newX] === targetValue) {
-                neighbors.push({ x: newX, y: newY });
-            }
-        }
-    }
-    
-    return neighbors;
+function getCacheKey(x: number, y: number, targetValue: number, width: number, height: number): string {
+    return `${x},${y},${targetValue},${width},${height}`;
 }
 
 /**
- * Flood fills a contiguous area starting from a point
+ * Optimized flood fill using scanline algorithm with tuple-based stack
  * @param layer The layer to flood fill
  * @param startX Starting X coordinate
  * @param startY Starting Y coordinate
@@ -70,38 +30,89 @@ export function floodFill(
 ): Point[] {
     const width = layer[0].length;
     const height = layer.length;
-    
-    // If start point is out of bounds or already the fill value
+
+    // For preview operations, check cache first
+    if (fillValue === -2) {
+        const cacheKey = getCacheKey(startX, startY, targetValue, width, height);
+        const cachedResult = fillCache.get(cacheKey);
+        if (cachedResult) {
+            // Quick validation by checking a few sample points
+            const isValid = cachedResult.every((p, i) => 
+                // Check first, last, and every 10th point
+                (i === 0 || i === cachedResult.length - 1 || i % 10 === 0) &&
+                layer[p.y][p.x] === targetValue
+            );
+            if (isValid) {
+                return cachedResult;
+            }
+            fillCache.delete(cacheKey);
+        }
+    }
+
+    // Check for invalid start conditions
     if (startX < 0 || startX >= width || startY < 0 || startY >= height ||
         layer[startY][startX] !== targetValue || targetValue === fillValue) {
         return [];
     }
-    
+
     const filledPoints: Point[] = [];
-    const queue: Point[] = [{ x: startX, y: startY }];
-    const visited = new Set<string>();
-    
-    while (queue.length > 0) {
-        const current = queue.shift()!;
-        const key = `${current.x},${current.y}`;
-        
-        // Skip if already visited
-        if (visited.has(key)) continue;
-        
-        // Mark as visited and fill
-        visited.add(key);
-        layer[current.y][current.x] = fillValue;
-        filledPoints.push(current);
-        
-        // Get neighbors using the improved neighbor detection
-        const neighbors = getNeighbors(current, layer, targetValue);
-        for (const neighbor of neighbors) {
-            const neighborKey = `${neighbor.x},${neighbor.y}`;
-            if (!visited.has(neighborKey)) {
-                queue.push(neighbor);
+    // Use tuple [x, y] to reduce allocation overhead
+    const stack: [number, number][] = [[startX, startY]];
+
+    while (stack.length) {
+        const [x, y] = stack.pop()!;
+        let xLeft = x;
+        let xRight = x;
+
+        // Move left to find the beginning of the span
+        while (xLeft >= 0 && layer[y][xLeft] === targetValue) {
+            xLeft--;
+        }
+        xLeft++;
+
+        // Move right to find the end of the span
+        while (xRight < width && layer[y][xRight] === targetValue) {
+            xRight++;
+        }
+        xRight--;
+
+        // Fill the span and record points
+        for (let i = xLeft; i <= xRight; i++) {
+            layer[y][i] = fillValue;
+            filledPoints.push({ x: i, y });
+        }
+
+        // Check the rows above and below for new spans
+        for (const newY of [y - 1, y + 1]) {
+            if (newY < 0 || newY >= height) continue;
+            let i = xLeft;
+            while (i <= xRight) {
+                if (layer[newY][i] === targetValue) {
+                    // Push the start of a new span onto the stack
+                    stack.push([i, newY]);
+                    // Skip the contiguous segment
+                    while (i <= xRight && layer[newY][i] === targetValue) {
+                        i++;
+                    }
+                } else {
+                    i++;
+                }
             }
         }
     }
-    
+
+    // Cache the result for non-preview operations
+    if (fillValue !== -2) {
+        const cacheKey = getCacheKey(startX, startY, targetValue, width, height);
+        // Maintain cache size
+        if (fillCache.size >= MAX_CACHE_SIZE) {
+            const firstKey = Array.from(fillCache.keys())[0];
+            if (firstKey) {
+                fillCache.delete(firstKey);
+            }
+        }
+        fillCache.set(cacheKey, [...filledPoints]);
+    }
+
     return filledPoints;
 } 

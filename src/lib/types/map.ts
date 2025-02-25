@@ -4,6 +4,7 @@ export type MapData = number[][][];
 export interface MapDimensions {
     width: number;
     height: number;
+    layers: number;
 }
 
 export interface TilemapSettings {
@@ -79,6 +80,7 @@ export function getMapDimensions(mapData: MapData): MapDimensions {
     }
     return {
         width: mapData[0][0].length,
-        height: mapData[0].length
+        height: mapData[0].length,
+        layers: mapData.length
     };
 } 

@@ -27,12 +27,17 @@ export function screenToMap(
     const halfTileX = evenBrushSize ? tileWidth / 2 : 0;
     const halfTileY = evenBrushSize ? tileHeight / 2 : 0;
     
+    // Convert screen coordinates to world coordinates
     const worldX = (screenX - offsetX) / zoomLevel;
     const worldY = (screenY - offsetY) / zoomLevel;
     
+    // Convert world coordinates to map coordinates (tile indices)
+    const mapX = Math.floor((worldX - halfTileX) / tileWidth);
+    const mapY = Math.floor((worldY - halfTileY) / tileHeight);
+    
     return {
-        x: Math.floor((worldX - halfTileX) / tileWidth),
-        y: Math.floor((worldY - halfTileY) / tileHeight)
+        x: mapX,
+        y: mapY
     };
 }
 
@@ -46,9 +51,17 @@ export function mapToScreen(
     tileWidth: number,
     tileHeight: number
 ): Point {
+    // Convert map coordinates (tile indices) to world coordinates
+    const worldX = mapX * tileWidth;
+    const worldY = mapY * tileHeight;
+    
+    // Convert world coordinates to screen coordinates
+    const screenX = (worldX * zoomLevel) + offsetX;
+    const screenY = (worldY * zoomLevel) + offsetY;
+    
     return {
-        x: (mapX * tileWidth * zoomLevel) + offsetX,
-        y: (mapY * tileHeight * zoomLevel) + offsetY
+        x: screenX,
+        y: screenY
     };
 }
 

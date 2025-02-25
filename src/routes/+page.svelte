@@ -19,8 +19,8 @@
     let editorCanvas: HTMLCanvasElement | undefined = $state();
     let editor: ReactiveMapEditor | undefined = $state();
 
-    let mapWidth = $state(64);
-    let mapHeight = $state(32);
+    let mapWidth = $state(30);
+    let mapHeight = $state(30);
 
     const url = `${base}/tilemap.png`;
 
@@ -52,7 +52,6 @@
         editorCanvas!.addEventListener('contextmenu', (e) => e.preventDefault());
 
         // Initial resize and center
-        handleResize();
         editor.centerMap();
     }
 
@@ -64,8 +63,8 @@
         editor?.handleMouseMove(e);
     }
 
-    function handleMouseUp() {
-        editor?.handleMouseUp();
+    function handleMouseUp(e: MouseEvent) {
+        editor?.handleMouseUp(e);
     }
 
     function handleResize() {
@@ -103,6 +102,14 @@
 
         // Skip editor keyboard handling if dialog is open, except for Shift key
         if (!isDialogOpen || e.key === 'Shift') {
+            // Prevent duplicate handling of WASD keys - these are already handled in MapEditor
+            const key = e.key.toLowerCase();
+            if (['w', 'a', 's', 'd'].includes(key) && !e.ctrlKey && !e.metaKey) {
+                // Let MapEditor handle WASD navigation
+                e.preventDefault();
+                return;
+            }
+            
             editor?.handleKeyDown(e);
         }
     }
@@ -178,24 +185,34 @@
         grid-template-rows: auto auto 1fr auto;
     }
     .window-body {
-        display: flex;
-        flex-direction: column;
+        display: grid;
+        grid-template-rows: auto 1fr;
         min-height: 0;
+        padding: 8px;
     }
     .status-bar {
+        display: flex;
+        gap: 8px;
         padding: 0 8px 8px 8px;
     }
     .status-bar-field {
         padding: 6px;
         font-weight: bold;
+        margin: 0;
     }
     .editor-container {
-        flex: 1;
+        min-height: 0;
+        min-width: 0;
+        position: relative;
         width: 100%;
         height: 100%;
+        overflow: hidden;
     }
     canvas {
-        flex: 1;
+        display: block;
+        position: absolute;
+        top: 0;
+        left: 0;
         width: 100%;
         height: 100%;
     }
