@@ -1,4 +1,4 @@
-import type { MapData, MapMetadata } from '../types/map';
+import type { MapData, MapMetadata } from './map';
 
 // Pack map data into a binary format
 export function packMapData(mapData: MapData): string {

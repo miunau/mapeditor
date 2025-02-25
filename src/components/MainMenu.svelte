@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { editorStore } from '../lib/state/EditorStore.svelte.js';
+    import { editorStore } from '../lib/state/EditorStore.svelte';
 
     let activeMenu: string | null = $state(null);
 
@@ -31,6 +31,9 @@
                 break;
             case 'about':
                 editorStore.setShowShortcuts(true);
+                break;
+            case 'renderSettings':
+                editorStore.setShowSettingsDialog(true);
                 break;
         }
     }
@@ -67,16 +70,17 @@
         <li class="menu-item">
             <button 
                 class="button-none menu-button"
-                class:active={activeMenu === 'map'}
-                onclick={() => handleMenuClick('map')}
-                onmouseenter={() => activeMenu && (activeMenu = 'map')}
+                class:active={activeMenu === 'edit'}
+                onclick={() => handleMenuClick('edit')}
+                onmouseenter={() => activeMenu && (activeMenu = 'edit')}
             >
-                Map
+                Edit
             </button>
-            {#if activeMenu === 'map'}
+            {#if activeMenu === 'edit'}
                 <div class="menu-dropdown">
                     <button class="button-none menu-option" onclick={() => handleMenuAction('resize')}>Resize Map...</button>
                     <button class="button-none menu-option" onclick={() => handleMenuAction('settings')}>Tilemap Settings...</button>
+                    <button class="button-none menu-option" onclick={() => handleMenuAction('renderSettings')}>Render Settings...</button>
                 </div>
             {/if}
         </li>

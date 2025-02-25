@@ -1,8 +1,7 @@
 import type { Tilemap } from '../tilemap';
 import type { BrushManager } from './BrushManager';
-import type { Brush } from '../types/brush';
+import type { Brush } from '../utils/brush';
 import { editorStore } from '../state/EditorStore.svelte';
-import { toolFSM } from '../state/ToolState.svelte';
 
 export class PaletteManager {
     private paletteX = 10;
@@ -76,7 +75,7 @@ export class PaletteManager {
                 const tileIndex = tilePos.tileY * this.tilemap.width + tilePos.tileX;
                 const brushId = `tile_${tileIndex}`;
                 this.brushManager.selectBrush(brushId);
-                toolFSM.send('selectTile', tileIndex);
+                editorStore.selectTile(tileIndex);
             }
             return;
         }
@@ -119,7 +118,7 @@ export class PaletteManager {
                 x >= currentX && x <= currentX + width) {
                 this.brushManager.selectBrush(brush.id);
                 if (editorStore.editor) {
-                    editorStore.editor.isCustomBrushMode = true;
+                    editorStore.selectCustomBrush(brush.id);
                 }
                 return;
             }

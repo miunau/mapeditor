@@ -13,6 +13,7 @@
     import ExportDialog from "../components/dialogs/ExportDialog.svelte";
     import ShortcutsDialog from "../components/dialogs/ShortcutsDialog.svelte";
     import CustomBrushDialog from "../components/dialogs/CustomBrushDialog.svelte";
+    import SettingsDialog from "../components/dialogs/SettingsDialog.svelte";
     import { editorStore } from "$lib/state/EditorStore.svelte";
     import MainMenu from "../components/MainMenu.svelte";
 
@@ -21,6 +22,7 @@
 
     let mapWidth = $state(30);
     let mapHeight = $state(30);
+    let resizeTimeout: number | null = $state(null);
 
     const url = `${base}/tilemap.png`;
 
@@ -68,7 +70,16 @@
     }
 
     function handleResize() {
-        editor?.resize();
+        // Clear any existing timeout
+        if (resizeTimeout) {
+            clearTimeout(resizeTimeout);
+        }
+        
+        // Set a new timeout to debounce the resize operation
+        resizeTimeout = setTimeout(() => {
+            editor?.resize();
+            resizeTimeout = null;
+        }, 100); // 100ms debounce
     }
 
     function handleKeyDown(e: KeyboardEvent) {
@@ -98,7 +109,8 @@
                            editorStore.showImportDialog || 
                            editorStore.showExportDialog || 
                            editorStore.showShortcuts || 
-                           editorStore.showCustomBrushDialog;
+                           editorStore.showCustomBrushDialog ||
+                           editorStore.showSettingsDialog;
 
         // Skip editor keyboard handling if dialog is open, except for Shift key
         if (!isDialogOpen || e.key === 'Shift') {
@@ -122,7 +134,8 @@
                            editorStore.showImportDialog || 
                            editorStore.showExportDialog || 
                            editorStore.showShortcuts || 
-                           editorStore.showCustomBrushDialog;
+                           editorStore.showCustomBrushDialog ||
+                           editorStore.showSettingsDialog;
 
         // Always handle Shift key up, even if dialog is open
         if (!isDialogOpen || e.key === 'Shift') {
@@ -165,6 +178,7 @@
             <ExportDialog />
             <ShortcutsDialog />
             <CustomBrushDialog />
+            <SettingsDialog />
         {/if}
         <div class="editor-container">
             <canvas id="editor-canvas" bind:this={editorCanvas}></canvas>
@@ -173,7 +187,9 @@
     <div class="status-bar">
         <p class="status-bar-field">Selected tile: {editorStore.selectedTile}</p>
         <p class="status-bar-field">Brush size: {editorStore.brushSize}</p>
-        <p class="status-bar-field">FPS: {editor?.fps ?? 0}</p>
+        {#if editorStore.renderSettings.showFPS}
+            <p class="status-bar-field">FPS: {editor?.fps ?? 0}</p>
+        {/if}
     </div>
 </div>
 
@@ -194,11 +210,20 @@
         display: flex;
         gap: 8px;
         padding: 0 8px 8px 8px;
+        justify-content: space-between;
     }
     .status-bar-field {
         padding: 6px;
         font-weight: bold;
         margin: 0;
+    }
+    .status-bar-right {
+        display: flex;
+        align-items: center;
+    }
+    .settings-button {
+        padding: 4px 8px;
+        font-size: 0.85em;
     }
     .editor-container {
         min-height: 0;

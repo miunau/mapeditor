@@ -1,9 +1,33 @@
-import type { CustomBrush } from '../types/map';
+import type { CustomBrush } from './map';
 import type { Point, Rect } from './coordinates';
 
-// Generate a unique ID for a brush
-export function generateBrushId(): string {
-    return `brush_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+export interface Brush {
+    id: string;
+    name: string;
+    tiles: number[][];  // For a single tile, this would be a 1x1 array
+    width: number;
+    height: number;
+    preview: HTMLCanvasElement | null;
+    isBuiltIn: boolean;  // To distinguish tilemap tiles from custom brushes
+}
+
+// Options for applying brushes
+export interface BrushApplicationOptions {
+    isErasing?: boolean;
+    useWorldAlignedRepeat?: boolean;
+    isCustomBrush?: boolean;  // Whether this is a custom brush that should be repeated based on brush size
+    forceModification?: boolean; // Force modification even if the tile value doesn't change (for debugging)
+}
+
+// Result of applying a brush
+export interface BrushApplicationResult {
+    modified: boolean;
+    modifiedArea?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
 }
 
 // Create a preview canvas for a brush
@@ -112,234 +136,3 @@ export function calculateBrushPattern(
 
     return pattern;
 }
-
-// Create an empty brush pattern
-export function createEmptyBrushPattern(width: number, height: number): number[][] {
-    return Array(height).fill(null).map(() => Array(width).fill(-1));
-}
-
-// Draw a single tile preview with border
-export function drawSingleTilePreview(
-    ctx: CanvasRenderingContext2D,
-    tile: HTMLCanvasElement,
-    x: number,
-    y: number,
-    tileWidth: number,
-    tileHeight: number,
-    zoomLevel: number,
-    alpha: number = 0.5
-) {
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(tile, x, y);
-    ctx.globalAlpha = 1.0;
-
-    // Draw border
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-    ctx.lineWidth = 2 / zoomLevel;
-    ctx.strokeRect(x, y, tileWidth, tileHeight);
-}
-
-// Draw a flood fill preview
-export function drawFloodFillPreview(
-    ctx: CanvasRenderingContext2D,
-    points: { x: number, y: number }[],
-    tileWidth: number,
-    tileHeight: number,
-    zoomLevel: number,
-    mapToScreen: (x: number, y: number, offsetX: number, offsetY: number, zoom: number, tileW: number, tileH: number) => Point
-) {
-    if (points.length === 0) return;
-
-    // Find the bounding box of all points
-    let minX = Infinity, minY = Infinity;
-    let maxX = -Infinity, maxY = -Infinity;
-    
-    for (const point of points) {
-        minX = Math.min(minX, point.x);
-        minY = Math.min(minY, point.y);
-        maxX = Math.max(maxX, point.x);
-        maxY = Math.max(maxY, point.y);
-    }
-
-    // Create a temporary canvas for the fill area
-    const width = (maxX - minX + 1) * tileWidth;
-    const height = (maxY - minY + 1) * tileHeight;
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = width;
-    tempCanvas.height = height;
-    const tempCtx = tempCanvas.getContext('2d')!;
-
-    // Create a path for all points at once
-    tempCtx.beginPath();
-    for (const point of points) {
-        const x = (point.x - minX) * tileWidth;
-        const y = (point.y - minY) * tileHeight;
-        tempCtx.rect(x, y, tileWidth, tileHeight);
-    }
-
-    // Fill all rectangles in one operation
-    tempCtx.fillStyle = 'rgba(255, 255, 255, 0.2)';
-    tempCtx.fill();
-
-    // Draw borders in one operation
-    tempCtx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-    tempCtx.lineWidth = 2 / zoomLevel;
-    tempCtx.stroke();
-
-    // Draw the temporary canvas to the main canvas in one operation
-    const screenPos = mapToScreen(minX, minY, 0, 0, 1, tileWidth, tileHeight);
-    ctx.drawImage(tempCanvas, screenPos.x, screenPos.y);
-}
-
-// Draw a rectangle preview with optional custom brush pattern
-export function drawRectanglePreview(
-    ctx: CanvasRenderingContext2D,
-    startX: number,
-    startY: number,
-    width: number,
-    height: number,
-    tileWidth: number,
-    tileHeight: number,
-    zoomLevel: number,
-    mapToScreen: (x: number, y: number, offsetX: number, offsetY: number, zoom: number, tileW: number, tileH: number) => Point,
-    options?: {
-        fillStyle?: string;
-        strokeStyle?: string;
-        alpha?: number;
-    }
-) {
-    const startPos = mapToScreen(startX, startY, 0, 0, 1, tileWidth, tileHeight);
-    
-    // Draw semi-transparent fill
-    if (options?.fillStyle) {
-        ctx.fillStyle = options.fillStyle;
-        ctx.fillRect(
-            startPos.x,
-            startPos.y,
-            width * tileWidth,
-            height * tileHeight
-        );
-    }
-
-    // Draw border
-    ctx.strokeStyle = options?.strokeStyle || 'rgba(255, 255, 255, 0.5)';
-    ctx.lineWidth = 2 / zoomLevel;
-    ctx.strokeRect(
-        startPos.x,
-        startPos.y,
-        width * tileWidth,
-        height * tileHeight
-    );
-}
-
-// Draw a custom brush preview
-export function drawCustomBrushPreview(
-    ctx: CanvasRenderingContext2D,
-    brush: CustomBrush,
-    targetArea: Rect,
-    getTile: (index: number) => HTMLCanvasElement | null,
-    tileWidth: number,
-    tileHeight: number,
-    zoomLevel: number,
-    mapToScreen: (x: number, y: number, offsetX: number, offsetY: number, zoom: number, tileW: number, tileH: number) => Point,
-    useWorldAlignedRepeat: boolean,
-    isInMapBounds: (x: number, y: number, dimensions: { width: number, height: number }) => boolean,
-    mapDimensions: { width: number, height: number },
-    filledPoints?: { x: number, y: number }[]
-) {
-    // If we have filled points, calculate the bounding box
-    if (filledPoints && filledPoints.length > 0) {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const point of filledPoints) {
-            minX = Math.min(minX, point.x);
-            minY = Math.min(minY, point.y);
-            maxX = Math.max(maxX, point.x);
-            maxY = Math.max(maxY, point.y);
-        }
-
-        targetArea = {
-            x: minX,
-            y: minY,
-            width: maxX - minX + 1,
-            height: maxY - minY + 1
-        };
-    }
-
-    const pattern = calculateBrushPattern(
-        targetArea,
-        { width: brush.width, height: brush.height },
-        useWorldAlignedRepeat
-    );
-
-    ctx.globalAlpha = 0.5;
-
-    // If we have filled points, only draw at those positions
-    if (filledPoints) {
-        for (const point of filledPoints) {
-            if (isInMapBounds(point.x, point.y, mapDimensions)) {
-                const relX = point.x - targetArea.x;
-                const relY = point.y - targetArea.y;
-                const { sourceX, sourceY } = pattern[relY][relX];
-                const tileIndex = brush.tiles[sourceY][sourceX];
-                if (tileIndex !== -1) {
-                    const tile = getTile(tileIndex);
-                    if (tile) {
-                        const screenPos = mapToScreen(
-                            point.x,
-                            point.y,
-                            0,
-                            0,
-                            1,
-                            tileWidth,
-                            tileHeight
-                        );
-                        ctx.drawImage(tile, screenPos.x, screenPos.y);
-                    }
-                }
-            }
-        }
-    } else {
-        // Regular brush preview - draw all tiles in the target area
-        for (let ty = 0; ty < targetArea.height; ty++) {
-            for (let tx = 0; tx < targetArea.width; tx++) {
-                const worldX = targetArea.x + tx;
-                const worldY = targetArea.y + ty;
-
-                if (isInMapBounds(worldX, worldY, mapDimensions)) {
-                    const { sourceX, sourceY } = pattern[ty][tx];
-                    const tileIndex = brush.tiles[sourceY][sourceX];
-                    if (tileIndex !== -1) {
-                        const tile = getTile(tileIndex);
-                        if (tile) {
-                            const screenPos = mapToScreen(
-                                worldX,
-                                worldY,
-                                0,
-                                0,
-                                1,
-                                tileWidth,
-                                tileHeight
-                            );
-                            ctx.drawImage(tile, screenPos.x, screenPos.y);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    ctx.globalAlpha = 1.0;
-
-    // Draw border around the entire brush area
-    drawRectanglePreview(
-        ctx,
-        targetArea.x,
-        targetArea.y,
-        targetArea.width,
-        targetArea.height,
-        tileWidth,
-        tileHeight,
-        zoomLevel,
-        mapToScreen
-    );
-} 

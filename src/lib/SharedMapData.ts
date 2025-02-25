@@ -2,7 +2,7 @@
  * SharedMapData.ts - Manages map data using SharedArrayBuffer for efficient worker communication
  */
 
-import type { MapData, MapDimensions } from './types/map';
+import type { MapData, MapDimensions } from './utils/map';
 
 export class SharedMapData {
     // The shared buffer that contains all map data

@@ -1,20 +1,13 @@
 import { Tilemap } from './tilemap';
 import { BrushManager } from './managers/BrushManager';
 import { PaletteManager } from './managers/PaletteManager';
-import type { Brush } from './types/brush';
-import { floodFill } from './floodfill';
-import type { MapData, MapDimensions, CustomBrush } from './types/map';
-import { createEmptyMap, cloneMapData, validateMapDimensions } from './types/map';
+import type { Brush } from './utils/brush';
+import type { MapData, MapDimensions, CustomBrush } from './utils/map';
+import { createEmptyMap, cloneMapData, validateMapDimensions } from './utils/map';
+import type { DrawOperation } from './utils/drawing';
 import type { Point, Rect } from './utils/coordinates';
-import { screenToMap, mapToScreen, isInMapBounds, getBrushArea, calculateMapCenter, getEllipsePoints } from './utils/coordinates';
+import { screenToMap, isInMapBounds, calculateMapCenter } from './utils/coordinates';
 import { 
-    generateBrushId, 
-    createBrushPreview, 
-    calculateBrushPattern,
-    drawFloodFillPreview,
-    drawCustomBrushPreview,
-    drawRectanglePreview,
-    drawSingleTilePreview,
     createBrushPreview as createBrushPreviewUtil
 } from './utils/brush';
 import { 
@@ -25,10 +18,9 @@ import {
     ZOOM_LEVELS 
 } from './utils/zoom';
 import { createMapMetadata, unpackMapData } from './utils/serialization';
-import type { ResizeAlignment } from './types/map';
+import type { ResizeAlignment } from './utils/map';
+import type { RenderSettings } from './state/EditorStore.svelte';
 
-import { toolFSM } from './state/ToolState.svelte';
-import { layerFSM } from './state/LayerState.svelte';
 import { editorStore } from './state/EditorStore.svelte';
 
 import { OptimizedRenderer } from './renderer/OptimizedRenderer';
@@ -49,8 +41,6 @@ export class ReactiveMapEditor {
     // Separate canvas for the palette
     paletteCanvas: HTMLCanvasElement | null = null;
     paletteCtx: CanvasRenderingContext2D | null = null;
-    // We no longer need this in the main thread since rendering is handled by the worker
-    // ctx: CanvasRenderingContext2D | null = null;
 
     // Map data
     mapData: MapData;
@@ -94,8 +84,10 @@ export class ReactiveMapEditor {
     isPainting = $state(false);
     paintTile = $state<number | null>(null);
     hasModifiedDuringPaint = $state(false);
-    rectangleStartX = $state<number | null>(null);
-    rectangleStartY = $state<number | null>(null);
+    
+    // Unified drawing coordinates
+    drawStartX = $state<number | null>(null);
+    drawStartY = $state<number | null>(null);
     isDrawingRectangle = $state(false);
 
     // For brush preview
@@ -112,8 +104,8 @@ export class ReactiveMapEditor {
     redoStack = $state<MapData[]>([]);
     maxUndoSteps = 50;
 
-    // For custom brushes
-    isCustomBrushMode = $state(false);
+    // For custom brushes - use the store's value directly
+    get isCustomBrushMode() { return editorStore.isCustomBrushMode; }
     useWorldAlignedRepeat = $state(false);
 
     // For tile selection
@@ -140,18 +132,18 @@ export class ReactiveMapEditor {
     private lastFrameTime = 0;
     private frameTimeHistory: number[] = [];
     private readonly FPS_SAMPLE_SIZE = 30; // Reduced to 30 frames for more responsive updates
-    private readonly FPS_SMOOTHING = 0.95; // Slightly reduced smoothing factor
+    private readonly FPS_SMOOTHING = 0.93; // Slightly reduced smoothing factor
     private readonly MAX_FPS = 144; // Cap FPS at 144Hz which is reasonable for most displays
     private readonly MIN_FPS = 1; // Minimum FPS to display
     private smoothedFps = 0;
 
     // Add to class properties
-    private ellipseStartX = $state<number | null>(null);
-    private ellipseStartY = $state<number | null>(null);
-    private isDrawingEllipse = $state(false);
-    private isShiftPressed = $state(false);
+    private isShiftPressed = false; // Add missing property for shift key state
 
     private renderer: OptimizedRenderer | null = null;
+
+    // Add render settings property
+    private renderSettings: RenderSettings = { ...editorStore.renderSettings };
 
     constructor(canvas: HTMLCanvasElement, width: number = 20, height: number = 15) {
         this.canvas = canvas;
@@ -209,8 +201,8 @@ export class ReactiveMapEditor {
     private setupReactivity() {
         // Watch for layer changes
         $effect(() => {
-            const currentLayer = layerFSM.context.currentLayer;
-            const showAllLayers = layerFSM.context.showAllLayers;
+            const currentLayer = editorStore.currentLayer;
+            const showAllLayers = editorStore.isShowAllLayers;
             
             // Update the renderer with the current layer information
             if (this.renderer) {
@@ -223,7 +215,7 @@ export class ReactiveMapEditor {
 
         // Watch for layer visibility changes
         $effect(() => {
-            const layerVisibility = layerFSM.context.layerVisibility;
+            const layerVisibility = editorStore.layerVisibility;
             
             // Update each layer's visibility in the renderer
             if (this.renderer) {
@@ -233,19 +225,13 @@ export class ReactiveMapEditor {
             }
         });
 
-        // Sync tool state
-        $effect(() => {
-            this.isFloodFillMode = toolFSM.context.currentTool === 'fill';
-            this.setBrushSize(toolFSM.context.brushSize);
-        });
-
         // Sync selected brush with selected tile
         $effect(() => {
-            if (this.brushManager && toolFSM.context.selectedTile >= 0) {
-                const brushId = `tile_${toolFSM.context.selectedTile}`;
+            if (this.brushManager && editorStore.selectedTile >= 0) {
+                const brushId = `tile_${editorStore.selectedTile}`;
                 if (this.brushManager.getSelectedBrush()?.id !== brushId) {
                     this.brushManager.selectBrush(brushId);
-                    console.log('MapEditor: Synced brush selection with toolFSM tile:', toolFSM.context.selectedTile, 'brushId:', brushId);
+                    console.log('MapEditor: Synced brush selection with editorStore tile:', editorStore.selectedTile, 'brushId:', brushId);
                     // Draw the palette when the selected brush changes
                     this.drawPalette();
                 }
@@ -271,48 +257,30 @@ export class ReactiveMapEditor {
     }
 
     // Getters and setters that sync with FSMs
-    get currentLayer() { return layerFSM.context.currentLayer; }
-    set currentLayer(value: number) { layerFSM.send('selectLayer', value); }
-
-    get brushSize() { return toolFSM.context.brushSize; }
-    set brushSize(value: number) { toolFSM.send('setBrushSize', value); }
-
-    get isFloodFillMode() { return toolFSM.context.currentTool === 'fill'; }
-    set isFloodFillMode(value: boolean) {
-        toolFSM.send('selectTool', value ? 'fill' : 'brush');
-    }
-
-    // Layer visibility methods
+    get currentLayer() { return editorStore.currentLayer; }
+    
+    // Use the brushSize directly from editorStore without a setter
+    get brushSize() { return editorStore.brushSize; }
+    
+    // Layer visibility methods - simplify to use editorStore directly
     isLayerVisible(layer: number): boolean {
-        return layerFSM.context.layerVisibility[layer];
+        return editorStore.layerVisibility[layer];
     }
-
+    
+    // We can keep this method as a convenience wrapper
     toggleLayerVisibility(layer: number) {
-        // Call the existing method to update state
-        layerFSM.send('toggleLayerVisibility', layer);
-        
-        // Now notify the worker of the visibility change
-        if (this.renderer) {
-            this.renderer.setLayerVisibility(layer, layerFSM.context.layerVisibility[layer]);
-        }
+        editorStore.toggleLayerVisibility(layer);
     }
 
     // Grid methods
     toggleGrid() {
+        // Update local state
         this.showGrid = !this.showGrid;
         
         // Update the renderer with the new grid state
         if (this.renderer) {
             this.renderer.setShowGrid(this.showGrid);
         }
-        
-        // Notify editor store of the change
-        editorStore.setShowGrid(this.showGrid);
-    }
-
-    // Brush size methods
-    setBrushSize(size: number) {
-        this.brushSize = Math.max(1, size);
     }
 
     // Handle mouse wheel for zooming
@@ -422,14 +390,6 @@ export class ReactiveMapEditor {
         }
     }
 
-    private update() {
-        if (!this.tilemap.isLoaded()) return;
-
-        // Let the renderer handle all drawing
-        if (this.renderer) {
-            this.renderer.redrawAll();
-        }
-    }
 
     // Add this private method for calculating mouse coordinates
     private calculateMouseCoordinates(e: MouseEvent): { x: number, y: number } {
@@ -497,114 +457,21 @@ export class ReactiveMapEditor {
                     console.log('MapEditor: Created undo buffer for painting operation');
                 }
                 
-                // Handle ellipse drawing start
-                if (toolFSM.context.currentTool === 'ellipse') {
-                    this.ellipseStartX = mapPos.x;
-                    this.ellipseStartY = mapPos.y;
-                    this.isDrawingEllipse = true;
-                    toolFSM.send('startEllipse');
-                    
-                    // Forward to worker
-                    if (this.renderer) {
-                        this.renderer.handleUIStateChange('drawingStart', {
-                            type: 'ellipse',
-                            startX: mapPos.x,
-                            startY: mapPos.y
-                        });
-                    }
-                    return; // Don't set isPainting while sizing the ellipse
-                }
-
-                this.isPainting = true;
-                
                 // Determine if we're erasing or painting
                 const isErasing = e.button === 2;
                 
-                // Set the paintTile value
-                if (isErasing) {
-                    this.paintTile = -1; // Empty tile for erasing
-                } else {
-                    // Use the selected tile
-                    const selectedBrush = this.brushManager?.getSelectedBrush();
-                    if (selectedBrush && selectedBrush.isBuiltIn) {
-                        const tileId = parseInt(selectedBrush.id.replace('tile_', ''));
-                        this.paintTile = tileId;
-                        
-                        // Debug logging for tile selection
-                        console.log('DEBUG - Tile Selection:', {
-                            selectedBrushId: selectedBrush.id,
-                            tileId: tileId,
-                            tileX: tileId % this.tilemap.width,
-                            tileY: Math.floor(tileId / this.tilemap.width),
-                            tilemapWidth: this.tilemap.width
-                        });
-                    } else {
-                        this.paintTile = toolFSM.context.selectedTile;
-                    }
-                    
-                    // Ensure valid tile index
-                    if (this.paintTile === null || this.paintTile < 0) {
-                        this.paintTile = 0; // Default to tile 0 instead of 1
-                    }
-                    
-                    // Log the selected tile and brush for debugging
-                    console.log('Painting - Selected tile info:', {
-                        paintTile: this.paintTile,
-                        selectedBrushId: selectedBrush?.id,
-                        toolFSMSelectedTile: toolFSM.context.selectedTile
-                    });
-                }
+                // Create a DrawOperation based on the current tool
+                const operation = this.createDrawOperation(mapPos.x, mapPos.y, isErasing);
                 
-                console.log('MapEditor: Set paintTile to', this.paintTile, 'isErasing:', isErasing);
-
-                // Handle flood fill
-                if (this.isFloodFillMode && e.button === 0) {
-                    // Forward to worker
-                    if (this.renderer) {
-                        this.renderer.handleUIStateChange('floodFill', {
-                            x: mapPos.x,
-                            y: mapPos.y,
-                            layer: this.currentLayer,
-                            tileIndex: this.paintTile,
-                            targetValue: this.mapData[this.currentLayer][mapPos.y][mapPos.x]
-                        });
-                    }
-                    return;
-                } else if (toolFSM.context.currentTool === 'rectangle') {
-                    // Rectangle drawing start
-                    this.rectangleStartX = mapPos.x;
-                    this.rectangleStartY = mapPos.y;
-                    this.isDrawingRectangle = true;
-                    toolFSM.send('startRectangle');
-                    
-                    // Forward to worker
-                    if (this.renderer) {
-                        this.renderer.handleUIStateChange('drawingStart', {
-                            type: 'rectangle',
-                            startX: mapPos.x,
-                            startY: mapPos.y
-                        });
-                    }
-                    return;
-                } else {
-                    // Apply brush immediately for normal painting
-                    console.log('MapEditor: Applying brush at', mapPos.x, mapPos.y, 'with tile', this.paintTile);
-                    
-                    // Forward to worker for rendering
-                    if (this.renderer) {
-                        const actualTileIndex = this.paintTile !== null ? this.paintTile : -1;
-                        
-                        this.renderer.handlePaintEvent(
-                                        this.currentLayer,
-                            mapPos.x,
-                            mapPos.y,
-                            actualTileIndex,
-                            this.brushSize
-                        );
-                    }
-                    
-                    // Also update local map data
-                    this.applyBrush(mapPos.x, mapPos.y, isErasing);
+                // Start drawing using the unified method
+                this.startDrawing(operation);
+                
+                // Store specific state based on tool type
+                if (operation.type === 'ellipse' || operation.type === 'rectangle' || operation.type === 'line') {
+                    this.drawStartX = mapPos.x;
+                    this.drawStartY = mapPos.y;
+                } else if (operation.type === 'brush') {
+                    this.isPainting = true;
                 }
             }
             
@@ -666,7 +533,7 @@ export class ReactiveMapEditor {
                     });
                     
                     this.brushManager?.selectBrush(brushId);
-                    toolFSM.send('selectTile', tileIndex);
+                    editorStore.selectTile(tileIndex);
                     
                     // Set the paintTile value directly to ensure consistency
                     this.paintTile = tileIndex;
@@ -727,18 +594,39 @@ export class ReactiveMapEditor {
                 
                 // Forward mouse move with hover info to worker
                 if (this.renderer) {
-                    this.renderer.handleMouseEvent('mousemove', {
+                    // Include drawing coordinates for shape previews
+                    const previewData: any = {
                         x: mouseX,
                         y: mouseY,
                         mapX: mapPos.x,
                         mapY: mapPos.y
-                    });
+                    };
+                    
+                    // Add drawing-specific data if we're in a drawing operation
+                    if (editorStore.isDrawing && this.drawStartX !== null && this.drawStartY !== null) {
+                        // Add drawing tool info
+                        previewData.drawStartX = this.drawStartX;
+                        previewData.drawStartY = this.drawStartY;
+                        
+                        // Set the appropriate drawing flag based on the current tool
+                        if (editorStore.currentTool === 'rectangle') {
+                            previewData.drawRectangle = true;
+                        } else if (editorStore.currentTool === 'ellipse') {
+                            previewData.drawEllipse = true;
+                        }
+                        
+                        // Add shift key state for constrained drawing
+                        previewData.shiftKey = this.isShiftPressed;
+                    }
+                    
+                    this.renderer.handleMouseEvent('mousemove', previewData);
                 }
                 
                 // Handle painting during mouse move
                 if (this.isPainting && isInMapBounds(mapPos.x, mapPos.y, dimensions)) {
-                    if (this.isFloodFillMode || toolFSM.context.currentTool === 'rectangle') {
-                        // Skip during flood fill and rectangle drawing
+                    const currentTool = editorStore.currentTool;
+                    if (currentTool === 'fill' || currentTool === 'rectangle' || currentTool === 'ellipse' || currentTool === 'line') {
+                        // Skip during flood fill and shape drawing
                         return;
                     }
                     
@@ -751,33 +639,16 @@ export class ReactiveMapEditor {
                     const newValue = isErasing ? -1 : this.paintTile;
                     
                     if (currentValue !== newValue) {
-                        // Log the current painting state for debugging
-                        console.log('Painting during mouse move:', { 
-                            x: mapPos.x, 
-                            y: mapPos.y, 
-                            isErasing, 
-                            paintTile: this.paintTile,
-                            selectedBrushId: this.brushManager?.getSelectedBrush()?.id,
-                            toolFSMSelectedTile: toolFSM.context.selectedTile,
-                            currentValue,
-                            newValue
-                        });
+                        // Create a DrawOperation for brush painting
+                        const operation = this.createDrawOperation(mapPos.x, mapPos.y, isErasing);
                         
-                        // Forward painting to worker
+                        // Use the renderer's draw method directly
                         if (this.renderer) {
-                            const actualTileIndex = this.paintTile !== null ? this.paintTile : -1;
-                            
-                            this.renderer.handlePaintEvent(
-                                this.currentLayer,
-                                mapPos.x,
-                                mapPos.y,
-                                actualTileIndex,
-                                this.brushSize
-                            );
+                            this.renderer.draw(operation);
                         }
                         
-                        // Also update local map data
-                        this.applyBrush(mapPos.x, mapPos.y, isErasing);
+                        // Mark as modified for undo/redo
+                        this.hasModifiedDuringPaint = true;
                     }
                 }
             }
@@ -846,67 +717,93 @@ export class ReactiveMapEditor {
         }
 
         // Handle rectangle drawing completion
-        if (this.isDrawingRectangle && 
-            this.rectangleStartX !== null && 
-            this.rectangleStartY !== null && 
+        if (editorStore.isDrawing && 
+            this.drawStartX !== null && 
+            this.drawStartY !== null && 
             this.hoverX >= 0 && 
-            this.hoverY >= 0) {
+            this.hoverY >= 0 &&
+            editorStore.currentTool === 'rectangle') {
             
-            const startX = Math.min(this.rectangleStartX, this.hoverX);
-            const startY = Math.min(this.rectangleStartY, this.hoverY);
-            const endX = Math.max(this.rectangleStartX, this.hoverX);
-            const endY = Math.max(this.rectangleStartY, this.hoverY);
+            // Create a DrawOperation for rectangle completion
+            const operation: DrawOperation = {
+                type: 'rectangle',
+                layer: this.currentLayer,
+                startX: Math.min(this.drawStartX, this.hoverX),
+                startY: Math.min(this.drawStartY, this.hoverY),
+                endX: Math.max(this.drawStartX, this.hoverX),
+                endY: Math.max(this.drawStartY, this.hoverY),
+                tileIndex: this.paintTile !== null ? this.paintTile : 0,
+                isErasing: this.paintTile === -1
+            };
             
-            const width = endX - startX + 1;
-            const height = endY - startY + 1;
-
-            // Forward rectangle completion to worker
-                    if (this.renderer) {
-                const actualTileIndex = this.paintTile !== null ? this.paintTile : -1;
-                
-                this.renderer.handlePaintRegion(
-                                this.currentLayer,
-                    startX,
-                    startY,
-                            width,
-                    height,
-                    actualTileIndex
-                );
+            // Use the renderer's draw method
+            if (this.renderer) {
+                this.renderer.draw(operation);
             }
             
-            // ... existing rectangle code ...
+            // Call stopDrawing to handle state cleanup
+            this.stopDrawing();
         }
-
-        // Reset rectangle drawing state
-        this.rectangleStartX = null;
-        this.rectangleStartY = null;
-
         // Handle ellipse drawing completion
-        if (this.isDrawingEllipse && 
-            this.ellipseStartX !== null && 
-            this.ellipseStartY !== null && 
+        else if (editorStore.isDrawing && 
+            this.drawStartX !== null && 
+            this.drawStartY !== null && 
             this.hoverX >= 0 && 
-            this.hoverY >= 0) {
+            this.hoverY >= 0 &&
+            editorStore.currentTool === 'ellipse') {
             
-            // Forward ellipse completion to worker
-                        if (this.renderer) {
-                this.renderer.handleUIStateChange('drawingComplete', {
-                    type: 'ellipse',
-                    startX: this.ellipseStartX,
-                    startY: this.ellipseStartY,
-                    endX: this.hoverX,
-                    endY: this.hoverY,
-                    currentLayer: this.currentLayer,
-                    tileIndex: this.paintTile
-                });
+            // Create a DrawOperation for ellipse completion
+            const operation: DrawOperation = {
+                type: 'ellipse',
+                layer: this.currentLayer,
+                startX: this.drawStartX,
+                startY: this.drawStartY,
+                endX: this.hoverX,
+                endY: this.hoverY,
+                tileIndex: this.paintTile !== null ? this.paintTile : 0,
+                isErasing: this.paintTile === -1
+            };
+            
+            // Use the renderer's draw method
+            if (this.renderer) {
+                this.renderer.draw(operation);
             }
             
-            // ... existing ellipse code ...
+            // Call stopDrawing to handle state cleanup
+            this.stopDrawing();
+        }
+        // Handle line drawing completion
+        else if (editorStore.isDrawing && 
+            this.drawStartX !== null && 
+            this.drawStartY !== null && 
+            this.hoverX >= 0 && 
+            this.hoverY >= 0 &&
+            editorStore.currentTool === 'line') {
+            
+            // Create a DrawOperation for line completion
+            const operation: DrawOperation = {
+                type: 'line',
+                layer: this.currentLayer,
+                startX: this.drawStartX,
+                startY: this.drawStartY,
+                endX: this.hoverX,
+                endY: this.hoverY,
+                tileIndex: this.paintTile !== null ? this.paintTile : 0,
+                isErasing: this.paintTile === -1
+            };
+            
+            // Use the renderer's draw method
+            if (this.renderer) {
+                this.renderer.draw(operation);
+            }
+            
+            // Call stopDrawing to handle state cleanup
+            this.stopDrawing();
         }
 
-        // Reset ellipse drawing state
-        this.ellipseStartX = null;
-        this.ellipseStartY = null;
+        // Reset drawing state
+        this.drawStartX = null;
+        this.drawStartY = null;
 
         // If we modified anything during this paint operation, save the state
         if (this.hasModifiedDuringPaint && this.undoBuffer) {
@@ -928,183 +825,6 @@ export class ReactiveMapEditor {
         this.isPanning = false;
         this.isPainting = false;
         this.paintTile = null;
-    }
-
-    cancelRectangleDrawing() {
-        if (this.isDrawingRectangle) {
-            this.rectangleStartX = null;
-            this.rectangleStartY = null;
-            this.isDrawingRectangle = false;
-            this.isPainting = false;
-            this.paintTile = null;
-            toolFSM.send('stopRectangle');
-        }
-    }
-
-    cancelEllipseDrawing() {
-        if (this.isDrawingEllipse) {
-            this.ellipseStartX = null;
-            this.ellipseStartY = null;
-            this.isDrawingEllipse = false;
-            this.isPainting = false;
-            this.paintTile = null;
-            toolFSM.send('stopEllipse');
-        }
-    }
-
-    // Brush application
-    private applyBrush(mapX: number, mapY: number, isErasing: boolean = false) {
-        if (!this.brushManager || !this.renderer || !this.sharedMapData) {
-            console.warn('MapEditor: Missing brushManager, renderer, or sharedMapData');
-            return;
-        }
-
-        // Ensure coordinates are within map bounds
-        const dimensions = this.getMapDimensions();
-        if (!isInMapBounds(mapX, mapY, dimensions)) {
-            console.warn('MapEditor: Brush coordinates out of bounds:', { mapX, mapY, dimensions });
-            return;
-        }
-        
-        // Determine the tile value to apply
-        let tileValue: number;
-        if (isErasing) {
-            tileValue = -1; // Empty tile for erasing
-        } else if (this.paintTile !== null && this.paintTile >= 0) {
-            tileValue = this.paintTile;
-            
-            // Debug the tile value being used
-            console.log('DEBUG - Paint Tile Value:', {
-                paintTile: this.paintTile,
-                tileX: this.paintTile % this.tilemap.width,
-                tileY: Math.floor(this.paintTile / this.tilemap.width),
-                tilemapWidth: this.tilemap.width
-            });
-            
-            // Ensure we have a selected brush for non-erasing operations
-            const brushId = `tile_${tileValue}`;
-            if (!this.brushManager.getSelectedBrush() || this.brushManager.getSelectedBrush()?.id !== brushId) {
-                this.brushManager.selectBrush(brushId);
-                console.log('MapEditor: Selected brush for painting:', brushId);
-            }
-        } else {
-            const selectedBrush = this.brushManager.getSelectedBrush();
-            if (selectedBrush && selectedBrush.isBuiltIn) {
-                tileValue = parseInt(selectedBrush.id.replace('tile_', ''));
-                
-                // Debug the tile value from the selected brush
-                console.log('DEBUG - Selected Brush Tile Value:', {
-                    brushId: selectedBrush.id,
-                    tileValue,
-                    tileX: tileValue % this.tilemap.width,
-                    tileY: Math.floor(tileValue / this.tilemap.width),
-                    tilemapWidth: this.tilemap.width
-                });
-            } else {
-                tileValue = toolFSM.context.selectedTile;
-                
-                // Ensure we have a selected brush
-                if (tileValue >= 0 && (!selectedBrush || (selectedBrush.isBuiltIn && selectedBrush.id !== `tile_${tileValue}`))) {
-                    const brushId = `tile_${tileValue}`;
-                    this.brushManager.selectBrush(brushId);
-                    console.log('MapEditor: Selected brush from toolFSM tile:', brushId);
-                }
-            }
-        }
-        
-        console.log('MapEditor: Applying brush:', { 
-            mapX, 
-            mapY, 
-            isErasing, 
-            brushSize: this.brushSize,
-            tileValue,
-            paintTile: this.paintTile,
-            selectedBrushId: this.brushManager.getSelectedBrush()?.id,
-            toolFSMSelectedTile: toolFSM.context.selectedTile
-        });
-        
-        // Check the current value at the target position
-        const currentValue = this.mapData[this.currentLayer][mapY][mapX];
-        console.log('MapEditor: Current value at target position:', {
-            layer: this.currentLayer,
-            x: mapX,
-            y: mapY,
-            value: currentValue
-        });
-        
-        // Let the BrushManager handle the brush application
-        const result = this.brushManager.applyBrush(
-            this.mapData[this.currentLayer],
-            mapX,
-            mapY,
-            this.brushSize,
-            {
-                isErasing,
-                useWorldAlignedRepeat: this.useWorldAlignedRepeat,
-                forceModification: true  // Force modification for debugging
-            }
-        );
-
-        console.log('MapEditor: Brush application result:', result);
-
-        // Always update the renderer regardless of whether tiles were modified
-        this.hasModifiedDuringPaint = true;
-        
-        // Use the modified area from result if available, otherwise create one based on brush
-        const area = result && result.modifiedArea 
-            ? result.modifiedArea 
-            : getBrushArea(mapX, mapY, this.brushSize);
-        
-        console.log('MapEditor: Using area for update:', area);
-        
-        // Ensure the area is within map bounds to prevent issues
-        const clampedArea = {
-            x: Math.max(0, area.x),
-            y: Math.max(0, area.y),
-            width: Math.min(area.width, dimensions.width - Math.max(0, area.x)),
-            height: Math.min(area.height, dimensions.height - Math.max(0, area.y))
-        };
-        
-        // Only proceed if we have a valid area to update
-        if (clampedArea.width > 0 && clampedArea.height > 0) {
-            // Extract the actual data that needs to be updated
-            const tiles = this.mapData[this.currentLayer]
-                .slice(clampedArea.y, clampedArea.y + clampedArea.height)
-                .map(row => row.slice(clampedArea.x, clampedArea.x + clampedArea.width));
-            
-            console.log('MapEditor: Updating shared map data with tiles:', {
-                area: clampedArea,
-                tiles: tiles
-            });
-            
-            // Update the shared map data
-            this.sharedMapData.updateRegion(
-                this.currentLayer,
-                clampedArea.x,
-                clampedArea.y,
-                tiles
-            );
-            
-            // Update the renderer with the modified region
-            this.renderer.updateRegion(
-                this.currentLayer,
-                clampedArea,
-                tiles
-            );
-            
-            // Check if the value was actually changed
-            const newValue = this.mapData[this.currentLayer][mapY][mapX];
-            console.log('MapEditor: Value after brush application:', {
-                layer: this.currentLayer,
-                x: mapX,
-                y: mapY,
-                oldValue: currentValue,
-                newValue: newValue,
-                changed: currentValue !== newValue
-            });
-        } else {
-            console.warn('MapEditor: Invalid area after clamping:', clampedArea);
-        }
     }
 
     // Keyboard event handlers
@@ -1149,27 +869,25 @@ export class ReactiveMapEditor {
         if (/^[0-9]$/.test(e.key)) {
             const layer = e.key === '0' ? 9 : parseInt(e.key) - 1;
             // Only select layer if it's visible
-            if (layer >= 0 && layer < this.MAX_LAYERS && layerFSM.context.layerVisibility[layer]) {
-                this.currentLayer = layer;
+            if (layer >= 0 && layer < this.MAX_LAYERS && editorStore.layerVisibility[layer]) {
+                editorStore.selectLayer(layer);
             }
             return;
         }
 
         // Handle section key for all layers toggle
         if (e.key === '§') {
-            this.currentLayer = this.currentLayer === -1 ? 0 : -1;
+            // Toggle between all layers view and current layer
+            editorStore.selectLayer(editorStore.currentLayer === -1 ? 0 : -1);
             return;
         }
 
         // Handle ESC key
         if (key === 'escape') {
             // Cancel drawing operations
-            if (this.isDrawingEllipse || this.isDrawingRectangle) {
-                this.isDrawingEllipse = false;
-                this.isDrawingRectangle = false;
-                this.ellipseStartX = this.ellipseStartY = null;
-                this.rectangleStartX = this.rectangleStartY = null;
-                toolFSM.send('cancelShape');
+            if (editorStore.isDrawing) {
+                this.drawStartX = this.drawStartY = null;
+                editorStore.cancelDrawing();
                 
                 // Notify worker to clear the preview
                 if (this.renderer) {
@@ -1200,7 +918,8 @@ export class ReactiveMapEditor {
                         this.undo();
                     }
                 } else {
-                    this.setBrushSize(Math.max(1, this.brushSize - 1));
+                    // Update brush size directly through editorStore
+                    editorStore.setBrushSize(Math.max(1, this.brushSize - 1));
                 }
                 break;
             case ' ':
@@ -1208,22 +927,28 @@ export class ReactiveMapEditor {
                 break;
             case 'r':
                 if (!e.ctrlKey && !e.metaKey) {
-                    toolFSM.send('selectTool', 'rectangle');
+                    editorStore.selectTool('rectangle');
                 }
                 break;
             case 'f':
             case 'g':
-                toolFSM.send('selectTool', this.isFloodFillMode ? 'brush' : 'fill');
+                editorStore.selectTool('fill');
                 break;
             case 'b':
-                toolFSM.send('selectTool', 'brush');
+                editorStore.selectTool('brush');
                 break;
             case 'x':
-                this.setBrushSize(this.brushSize + 1);
+                // Update brush size directly through editorStore
+                editorStore.setBrushSize(this.brushSize + 1);
                 break;
             case 'e':
                 if (!e.ctrlKey && !e.metaKey) {
-                    toolFSM.send('selectTool', 'ellipse');
+                    editorStore.selectTool('ellipse');
+                }
+                break;
+            case 'l':
+                if (!e.ctrlKey && !e.metaKey) {
+                    editorStore.selectTool('line');
                 }
                 break;
         }
@@ -1248,7 +973,7 @@ export class ReactiveMapEditor {
             console.log('WASD Navigation - Current selection:', {
                 brushId: selectedBrush.id,
                 isBuiltIn: selectedBrush.isBuiltIn,
-                toolFSMSelectedTile: toolFSM.context.selectedTile
+                selectedTile: editorStore.selectedTile
             });
             
             // Map WASD keys to directions
@@ -1270,29 +995,26 @@ export class ReactiveMapEditor {
             if (nextBrushId && this.brushManager) {
                 const brush = this.brushManager.getBrush(nextBrushId);
                 if (brush) {
-                    this.brushManager.selectBrush(nextBrushId);
+                    // Use editorStore to select the brush
+                    editorStore.selectCustomBrush(nextBrushId);
                     
                     // If it's a built-in brush, update the selected tile
                     if (brush.isBuiltIn) {
                         const tileId = parseInt(brush.id.replace('tile_', ''));
-                        toolFSM.send('selectTile', tileId);
+                        editorStore.selectTile(tileId);
                         
                         // Also update this.paintTile to ensure consistency
                         this.paintTile = tileId;
-                        
-                        // Also update this.isCustomBrushMode
-                        this.isCustomBrushMode = false;
                         
                         // Log the new selection
                         console.log('WASD Navigation - Selected built-in brush:', {
                             brushId: nextBrushId,
                             tileId: tileId,
                             paintTile: this.paintTile,
-                            toolFSMSelectedTile: tileId
+                            selectedTile: tileId
                         });
                     } else {
-                        // It's a custom brush
-                        this.isCustomBrushMode = true;
+                        // It's a custom brush - no need to set isCustomBrushMode as it's derived from the selected brush
                         
                         // Log the new selection
                         console.log('WASD Navigation - Selected custom brush:', {
@@ -1339,7 +1061,7 @@ export class ReactiveMapEditor {
         this.isKeyPanning = Object.values(this.keyPanState).some(value => value);
         
         // Forward key events to the worker
-                    if (this.renderer) {
+        if (this.renderer) {
             this.renderer.handleKeyEvent('keyup', {
                 key,
                 ctrlKey: e.ctrlKey,
@@ -1534,8 +1256,10 @@ export class ReactiveMapEditor {
         // Create and select the brush using the brush manager
         const brush = this.brushManager.createCustomBrush(`${width}x${height} Selection`, tiles, this.tilemap);
         console.log('Created brush:', brush);
-        this.brushManager.selectBrush(brush.id);
-        this.isCustomBrushMode = true;
+        
+        // Use editorStore to select the brush
+        editorStore.selectCustomBrush(brush.id);
+        
         console.log('Selected brush:', this.brushManager.getSelectedBrush());
 
         // Reset selection state
@@ -1546,7 +1270,6 @@ export class ReactiveMapEditor {
         this.selectionEndY = null;
     }
 
-    // Remove old brush management methods since we're using BrushManager
     createCustomBrush(name: string | null, tiles: number[][]): Brush {
         if (!this.brushManager) throw new Error('BrushManager not initialized');
         return this.brushManager.createCustomBrush(name || '', tiles, this.tilemap);
@@ -1563,9 +1286,8 @@ export class ReactiveMapEditor {
 
     selectCustomBrush(brushId: string | null) {
         if (!this.brushManager) return;
-        this.brushManager.selectBrush(brushId);
-        const brush = this.brushManager.getSelectedBrush();
-        this.isCustomBrushMode = brush !== null && !brush.isBuiltIn;
+        // Use editorStore to select the brush
+        editorStore.selectCustomBrush(brushId);
     }
 
     // Tilemap settings methods
@@ -1589,7 +1311,7 @@ export class ReactiveMapEditor {
         this.tilemap = new Tilemap(url, tileWidth, tileHeight, spacing);
         
         // Reset selected tile
-        toolFSM.send('selectTile', 0);
+        editorStore.selectTile(0);
 
         // Load the new tilemap
         try {
@@ -1917,7 +1639,10 @@ export class ReactiveMapEditor {
             this.logCanvasDimensions('Initial canvas dimensions');
 
             // Initialize the renderer
-            this.renderer = new OptimizedRenderer(this.canvas);
+            this.renderer = new OptimizedRenderer(this.canvas, this.renderSettings.debugMode);
+            
+            // Apply render settings
+            this.renderer.updateRenderSettings(this.renderSettings);
             
             // Get map dimensions
             const dimensions = this.getMapDimensions();
@@ -1929,8 +1654,8 @@ export class ReactiveMapEditor {
                     dimensions.height,
                     this.MAX_LAYERS,
                     this.mapData,
-                    this.tilemap.tileWidth,
-                    this.tilemap.tileHeight
+                    this.tileWidth,
+                    this.tileHeight
                 );
             }
             
@@ -1950,9 +1675,9 @@ export class ReactiveMapEditor {
             await this.renderer.initialize(
                 dimensions.width,
                 dimensions.height,
-                this.tilemap.tileWidth,
-                this.tilemap.tileHeight,
-                this.tilemap.spacing,
+                this.tileWidth,
+                this.tileHeight,
+                this.tileSpacing,
                 this.tilemapUrl,
                 initialWidth,
                 initialHeight,
@@ -1970,9 +1695,9 @@ export class ReactiveMapEditor {
             console.log('MapEditor: Initialized renderer with dimensions:', {
                 width: dimensions.width,
                 height: dimensions.height,
-                tileWidth: this.tilemap.tileWidth,
-                tileHeight: this.tilemap.tileHeight,
-                spacing: this.tilemap.spacing,
+                tileWidth: this.tileWidth,
+                tileHeight: this.tileHeight,
+                spacing: this.tileSpacing,
                 tilemapUrl: this.tilemapUrl,
                 mapDataSize: this.mapData.length,
                 canvasWidth: initialWidth,
@@ -1980,7 +1705,7 @@ export class ReactiveMapEditor {
             });
 
             // Select first tile
-            toolFSM.send('selectTile', 0); // Use tile 0 as the initial selection
+            editorStore.selectTile(0); // Use tile 0 as the initial selection
             
             // Also select the corresponding brush
             if (this.brushManager) {
@@ -1990,7 +1715,7 @@ export class ReactiveMapEditor {
 
             // Set up layer visibility in the worker
             for (let i = 0; i < this.MAX_LAYERS; i++) {
-                this.renderer.setLayerVisibility(i, layerFSM.context.layerVisibility[i]);
+                this.renderer.setLayerVisibility(i, editorStore.layerVisibility[i]);
             }
 
             // Set initial grid visibility in the worker
@@ -2284,14 +2009,14 @@ export class ReactiveMapEditor {
                 }
                 
                 if (this.brushManager) {
-                    this.brushManager.selectBrush(brushId);
-                    this.isCustomBrushMode = false;
+                    // Use editorStore to select the brush
+                    editorStore.selectCustomBrush(brushId);
                     
                     // Set the paintTile value directly to ensure consistency
                     this.paintTile = tileIndex;
                 }
                 
-                toolFSM.send('selectTile', tileIndex);
+                editorStore.selectTile(tileIndex);
                 
                 // Redraw the palette to show the selection
                 this.drawPalette();
@@ -2341,7 +2066,7 @@ export class ReactiveMapEditor {
                     });
                     
                     this.brushManager?.selectBrush(brushId);
-                    toolFSM.send('selectTile', tileIndex);
+                    editorStore.selectTile(tileIndex);
                     
                     // Set the paintTile value directly to ensure consistency
                     this.paintTile = tileIndex;
@@ -2458,6 +2183,129 @@ export class ReactiveMapEditor {
                 metaKey: e.metaKey
             });
         }
+    }
+
+    // Update render settings
+    updateRenderSettings(settings: RenderSettings) {
+        console.log('MapEditor: Updating render settings:', settings);
+        this.renderSettings = { ...settings };
+        
+        // Apply settings to renderer
+        if (this.renderer) {
+            this.renderer.updateRenderSettings(settings);
+        }
+    }
+
+    // Unified drawing methods
+    startDrawing(operation: DrawOperation) {
+        console.log('MapEditor: Starting drawing operation:', operation);
+        
+        // Store the initial state for undo
+        if (!this.undoBuffer) {
+            this.undoBuffer = cloneMapData(this.mapData);
+            console.log('MapEditor: Created undo buffer for drawing operation');
+        }
+        
+        // Set the paintTile value
+        this.paintTile = operation.isErasing ? -1 : operation.tileIndex;
+        
+        // Update FSM state if needed
+        if (operation.type !== 'brush' && !editorStore.isDrawing) {
+            // Start a new drawing operation in the FSM
+            editorStore.startDrawing(operation);
+        }
+        
+        // Forward to renderer if available
+        if (this.renderer) {
+            this.renderer.draw(operation);
+        }
+    }
+    
+    stopDrawing() {
+        console.log('MapEditor: Stopping drawing operation');
+        
+        // Handle completion based on current state
+        editorStore.stopDrawing();
+        
+        // If we modified anything during this operation, save the state
+        if (this.hasModifiedDuringPaint && this.undoBuffer) {
+            // Push the state that was captured at the start of painting
+            this.undoStack.push(this.undoBuffer);
+            
+            // Trim undo stack if it's too long
+            if (this.undoStack.length > this.maxUndoSteps) {
+                this.undoStack.shift();
+            }
+            
+            // Clear redo stack when new state is saved
+            this.redoStack = [];
+            
+            this.undoBuffer = null;
+            this.hasModifiedDuringPaint = false;
+        }
+        
+        // Reset painting state
+        this.isPainting = false;
+        this.paintTile = null;
+    }
+    
+    cancelDrawing() {
+        console.log('MapEditor: Canceling drawing operation');
+        
+        // Reset undo buffer without saving
+        this.undoBuffer = null;
+        this.hasModifiedDuringPaint = false;
+        
+        // Reset painting state
+        this.isPainting = false;
+        this.paintTile = null;
+        
+        // Reset drawing coordinates
+        this.drawStartX = null;
+        this.drawStartY = null;
+        
+        // Update FSM state
+        editorStore.cancelDrawing();
+        
+        // Clear brush preview in renderer
+        if (this.renderer) {
+            this.renderer.clearBrushPreview();
+        }
+    }
+
+    // Create a DrawOperation based on the current tool and coordinates
+    createDrawOperation(mapX: number, mapY: number, isErasing: boolean): DrawOperation {
+        // Determine the tile index to use
+        let tileIndex = -1;
+        if (!isErasing) {
+            // Use the selected tile
+            const selectedBrush = this.brushManager?.getSelectedBrush();
+            if (selectedBrush && selectedBrush.isBuiltIn) {
+                tileIndex = parseInt(selectedBrush.id.replace('tile_', ''));
+            } else {
+                tileIndex = editorStore.selectedTile;
+            }
+            
+            // Ensure valid tile index
+            if (tileIndex < 0) {
+                tileIndex = 0; // Default to tile 0
+            }
+        }
+        
+        // Create the operation based on the current tool
+        const operation: DrawOperation = {
+            type: editorStore.currentTool,
+            layer: this.currentLayer,
+            startX: mapX,
+            startY: mapY,
+            tileIndex,
+            isErasing,
+            brushSize: this.brushSize
+        };
+        
+        console.log(`MapEditor: Created ${operation.type} operation:`, operation);
+        
+        return operation;
     }
 }
 

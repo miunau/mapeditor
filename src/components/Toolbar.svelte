@@ -1,6 +1,5 @@
 <script lang="ts">
     import { editorStore } from '../lib/state/EditorStore.svelte';
-    import { layerFSM } from '../lib/state/LayerState.svelte';
     import { calculateZoomTransform, findClosestZoomLevel } from '../lib/utils/zoom';
     import type { ZoomLevel } from '../lib/utils/zoom';
     import IconButton from './IconButton.svelte';
@@ -214,7 +213,7 @@
                     onclick={() => playClickSound(() => editorStore.selectLayer(i))}
                     class="small"
                     title="Select layer {i + 1} (press {i + 1})"
-                    disabled={!layerFSM.context.layerVisibility[i]}
+                    disabled={!editorStore.layerVisibility[i]}
                 >
                     {i + 1}
                 </button>
@@ -224,7 +223,7 @@
                 onclick={() => playClickSound(() => editorStore.selectLayer(9))}
                 title="Select layer 10 (press 0)"
                 class="small"
-                disabled={!layerFSM.context.layerVisibility[9]}
+                disabled={!editorStore.layerVisibility[9]}
             >
                 10
             </button>
