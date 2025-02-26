@@ -6,9 +6,9 @@
  * data sharing between the main thread and worker.
  */
 
-import type { MapData, MapDataManager } from '$lib/managers/MapDataManager';
+import type { MapData, MapDataManager } from '$lib/managers/MapDataManager.svelte';
 import type { RenderSettings } from '$lib/utils/settings';
-import type { DrawOperation } from '$lib/utils/drawing';
+import type { DrawOperation } from '$lib/types/drawing';
 import type { FSM } from '$lib/utils/fsm.svelte';
 import type { EditorContext } from '$lib/state/EditorStore.svelte';
 
@@ -609,7 +609,8 @@ export class Renderer {
         button?: number,
         mapX?: number,
         mapY?: number,
-        isPanning?: boolean
+        isPanning?: boolean,
+        brushSize?: number
     }) {
         if (!this.isInitialized || !this.worker) return;
         
@@ -663,17 +664,6 @@ export class Renderer {
             width,
             height,
             tileIndex
-        });
-    }
-
-    // Handle UI state changes
-    handleUIStateChange(stateType: string, data: any) {
-        if (!this.isInitialized || !this.worker) return;
-        
-        this.worker.postMessage({
-            type: 'uiStateChange',
-            stateType,
-            data
         });
     }
 
@@ -761,7 +751,7 @@ export class Renderer {
         });
     }
 
-    draw(operation: DrawOperation) {
+    startDraw(operation: DrawOperation) {
         if (!this.isInitialized || !this.worker) return;
         
         this.worker.postMessage({
@@ -770,6 +760,14 @@ export class Renderer {
         });
     }
 
+    continueDraw(operation: DrawOperation) {
+        if (!this.isInitialized || !this.worker) return;
+        
+        this.worker.postMessage({
+            type: 'draw',
+            operation
+        });
+    }
     // Center the map in the viewport
     centerMap() {
         if (!this.canvas || !this.machine) return;

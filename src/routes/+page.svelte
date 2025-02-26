@@ -26,6 +26,8 @@
             debug: true,
         });
     });
+
+    console.log('editorFSM', editorFSM)
 </script>
 
 <svelte:head>

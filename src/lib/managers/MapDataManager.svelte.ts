@@ -1,4 +1,4 @@
-import type { CustomBrush } from '$lib/utils/drawing';
+import type { Brush } from '$lib/types/drawing';
 import type { TilemapSettings } from '$lib/utils/settings';
 import type { Tilemap } from '../utils/tilemap';
 
@@ -53,7 +53,7 @@ export interface MapMetadata {
     /** Settings for the tileset used by this map */
     tilemap: TilemapSettings;
     /** Optional array of custom brushes saved with this map */
-    customBrushes?: CustomBrush[];
+    customBrushes?: Brush[];
 }
 
 

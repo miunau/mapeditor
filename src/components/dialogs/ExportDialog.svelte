@@ -18,15 +18,15 @@
     });
 
     function exportMap() {
-        if (!editorFSM.context.mapDataManager || !editorFSM.context.brushManager) {
-            console.error('Map data manager or brush manager not initialized');
+        if (!editorFSM.context.mapDataManager) {
+            console.error('Map data manager not initialized');
             return;
         }
         
         const mapData = editorFSM.context.mapDataManager.cloneMapData();
         const dimensions = editorFSM.context.mapDataManager.getDimensions();
         const tilemapSettings = editorFSM.context.tilemap?.getSettings();
-        const customBrushes = includeCustomBrushes ? editorFSM.context.brushManager.getCustomBrushes() : undefined;
+        const customBrushes = includeCustomBrushes ? Array.from(editorFSM.context.brushes.values()).filter(brush => brush.type === 'custom') : undefined;
         
         if (!tilemapSettings) {
             console.error('Tilemap settings not available');

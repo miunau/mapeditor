@@ -1,11 +1,13 @@
 import type { RenderSettings } from '../utils/settings.js';
-import type { Point, Rect, DrawOperation, BrushPatternSource } from '../utils/drawing.js';
+import type { Point, Rect, DrawOperation, BrushPatternSource } from '../types/drawing.js';
 
 // Calculate brush area
 function calculateBrushArea(x: number, y: number, size: number): Rect {
-    // For odd sizes, center on the tile
-    // For even sizes, align with top-left corner
-    const offset = size % 2 === 0 ? 0 : Math.floor(size / 2);
+    // Center the brush for all sizes
+    // For odd sizes: floor(size/2) gives the exact center offset
+    // For even sizes: size/2 - 0.5 would be the exact center, but we need integer coordinates
+    //                so we use floor(size/2) which is slightly offset but visually centered
+    const offset = Math.floor(size / 2);
     
     return {
         x: x - offset,
@@ -352,9 +354,6 @@ class RenderWorker {
                     break;
                 case 'paintRegion':
                     this.handlePaintRegion(data.layer, data.startX, data.startY, data.width, data.height, data.tileIndex);
-                    break;
-                case 'uiStateChange':
-                    this.handleUIStateChange(data.stateType, data.data);
                     break;
                 case 'draw':
                     // New unified drawing handler
@@ -1009,7 +1008,7 @@ class RenderWorker {
         // Calculate brush bounds
         const brushX = this.brushPreview.x;
         const brushY = this.brushPreview.y;
-        const brushSize = this.brushPreview.brushSize;
+        const brushSize = this.brushPreview.brushSize || 1;
         
         // Set a semi-transparent fill style
         this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
@@ -1040,12 +1039,9 @@ class RenderWorker {
             
             this.drawRectanglePreview(startX, startY, width, height);
         } else {
-            // Draw standard brush preview
-            const halfBrush = Math.floor(brushSize / 2);
-            const startX = brushSize % 2 === 0 ? brushX - halfBrush : brushX - halfBrush;
-            const startY = brushSize % 2 === 0 ? brushY - halfBrush : brushY - halfBrush;
-            
-            this.drawRectanglePreview(startX, startY, brushSize, brushSize);
+            // Draw standard brush preview based on brush size
+            const area = calculateBrushArea(brushX, brushY, brushSize);
+            this.drawRectanglePreview(area.x, area.y, area.width, area.height);
         }
     }
     
@@ -1521,7 +1517,12 @@ class RenderWorker {
                 this.brushPreview.x = data.mapX;
                 this.brushPreview.y = data.mapY;
                 this.brushPreview.active = true;
-                    } else {
+                
+                // Update brush size if provided
+                if (data.brushSize !== undefined) {
+                    this.brushPreview.brushSize = data.brushSize;
+                }
+            } else {
                 this.brushPreview.active = false;
             }
         }
@@ -1599,9 +1600,11 @@ class RenderWorker {
     
     // Helper to calculate brush area
     private calculateBrushArea(x: number, y: number, size: number): { x: number, y: number, width: number, height: number } {
-        // For odd sizes, center on the tile
-        // For even sizes, align with top-left corner
-        const offset = size % 2 === 0 ? 0 : Math.floor(size / 2);
+        // Center the brush for all sizes
+        // For odd sizes: floor(size/2) gives the exact center offset
+        // For even sizes: size/2 - 0.5 would be the exact center, but we need integer coordinates
+        //                so we use floor(size/2) which is slightly offset but visually centered
+        const offset = Math.floor(size / 2);
         
         return {
             x: x - offset,
@@ -1672,168 +1675,6 @@ class RenderWorker {
         this.redrawAll();
     }
 
-    // Handle UI state changes
-    private handleUIStateChange(stateType: string, data: any) {
-        if (this.debugMode) {
-            console.log('RenderWorker: Handling UI state change:', stateType, data);
-        }
-        
-        switch (stateType) {
-            case 'drawingStart':
-                // Handle start of drawing operations (rectangle, ellipse)
-                if (data.type === 'rectangle') {
-                    this.brushPreview.drawRectangle = true;
-                    this.brushPreview.drawStartX = data.startX;
-                    this.brushPreview.drawStartY = data.startY;
-                } else if (data.type === 'ellipse') {
-                    this.brushPreview.drawEllipse = true;
-                    this.brushPreview.drawStartX = data.startX;
-                    this.brushPreview.drawStartY = data.startY;
-                } else if (data.type === 'line') {
-                    // Add support for line drawing
-                    this.brushPreview.drawStartX = data.startX;
-                    this.brushPreview.drawStartY = data.startY;
-                }
-                break;
-            case 'drawingComplete':
-                // Handle completion of drawing operations
-                if (data.type === 'rectangle') {
-                    this.brushPreview.drawRectangle = false;
-                    
-                    // Actually draw the rectangle when complete
-                    if (data.startX !== undefined && data.startY !== undefined && 
-                        data.endX !== undefined && data.endY !== undefined && 
-                        data.currentLayer !== undefined && data.tileIndex !== undefined) {
-                        
-                        // Calculate rectangle bounds
-                        const startX = Math.min(data.startX, data.endX);
-                        const startY = Math.min(data.startY, data.endY);
-                        const endX = Math.max(data.startX, data.endX);
-                        const endY = Math.max(data.startY, data.endY);
-                        
-                        // Fill the rectangle with the selected tile
-                        if (this.sharedMapData) {
-                            for (let y = startY; y <= endY; y++) {
-                                for (let x = startX; x <= endX; x++) {
-                                    if (x >= 0 && x < this.mapWidth && 
-                                        y >= 0 && y < this.mapHeight) {
-                                        const index = this.getFlatIndex(data.currentLayer, y, x);
-                                        this.sharedMapData[index] = data.tileIndex;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if (data.type === 'ellipse') {
-                    this.brushPreview.drawEllipse = false;
-                    
-                    // Actually draw the ellipse when complete
-                    if (data.startX !== undefined && data.startY !== undefined && 
-                        data.endX !== undefined && data.endY !== undefined && 
-                        data.currentLayer !== undefined && data.tileIndex !== undefined) {
-                        
-                        console.log('RenderWorker: Drawing ellipse with tile index:', data.tileIndex);
-                        
-                        // Calculate center and radii
-                        const centerX = Math.floor((data.startX + data.endX) / 2);
-                        const centerY = Math.floor((data.startY + data.endY) / 2);
-                        const radiusX = Math.abs(data.endX - data.startX) / 2;
-                        const radiusY = Math.abs(data.endY - data.startY) / 2;
-                        
-                        console.log('RenderWorker: Ellipse parameters:', {
-                            centerX,
-                            centerY,
-                            radiusX,
-                            radiusY,
-                            startX: data.startX,
-                            startY: data.startY,
-                            endX: data.endX,
-                            endY: data.endY,
-                            layer: data.currentLayer
-                        });
-                        
-                        // Get all points in the ellipse
-                        const points = getEllipsePoints(centerX, centerY, radiusX, radiusY);
-                        
-                        console.log(`RenderWorker: Generated ${points.length} points for ellipse`);
-                        
-                        // Fill all points with the selected tile
-                        if (this.sharedMapData) {
-                            let pointsUpdated = 0;
-                            for (const point of points) {
-                                if (point.x >= 0 && point.x < this.mapWidth && 
-                                    point.y >= 0 && point.y < this.mapHeight) {
-                                    const index = this.getFlatIndex(data.currentLayer, point.y, point.x);
-                                    this.sharedMapData[index] = data.tileIndex;
-                                    pointsUpdated++;
-                                }
-                            }
-                            console.log(`RenderWorker: Updated ${pointsUpdated} points with tile index ${data.tileIndex}`);
-                        }
-                    }
-                } else if (data.type === 'line') {
-                    // Handle line drawing completion
-                    if (data.startX !== undefined && data.startY !== undefined && 
-                        data.endX !== undefined && data.endY !== undefined && 
-                        data.currentLayer !== undefined && data.tileIndex !== undefined) {
-                        
-                        // Get points along the line
-                        const points = getLinePoints(data.startX, data.startY, data.endX, data.endY);
-                        
-                        // Fill all points with the selected tile
-                        if (this.sharedMapData) {
-                            for (const point of points) {
-                                if (point.x >= 0 && point.x < this.mapWidth && 
-                                    point.y >= 0 && point.y < this.mapHeight) {
-                                    const index = this.getFlatIndex(data.currentLayer, point.y, point.x);
-                                    this.sharedMapData[index] = data.tileIndex;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Reset drawing coordinates
-                this.brushPreview.drawStartX = undefined;
-                this.brushPreview.drawStartY = undefined;
-                
-                // Mark layer for update since the operation is complete
-                if (this.updateFlags && data.currentLayer !== undefined) {
-                    Atomics.store(this.updateFlags, data.currentLayer, 1);
-                }
-                
-                // Mark LOD canvases as dirty
-                this.markLODCanvasDirty();
-                break;
-            case 'floodFill':
-                // Actually perform the flood fill operation
-                if (data.x !== undefined && data.y !== undefined && 
-                    data.layer !== undefined && data.tileIndex !== undefined && 
-                    data.targetValue !== undefined) {
-                    
-                    // Perform the flood fill
-                    this.floodFill(
-                        data.layer,
-                        data.x,
-                        data.y,
-                        data.targetValue,
-                        data.tileIndex
-                    );
-                    
-                    // Mark the layer as needing update
-                    if (this.updateFlags) {
-                        Atomics.store(this.updateFlags, data.layer, 1);
-                    }
-                    
-                    // Mark LOD canvases as dirty
-                    this.markLODCanvasDirty();
-                }
-                break;
-        }
-        
-        // Request a render
-        this.redrawAll();
-    }
 
     // Update a layer buffer with current tile data (only for the visible area)
     private updateLayerBuffer(layer: number) {
@@ -2383,10 +2224,10 @@ class RenderWorker {
     private drawBrush(operation: DrawOperation) {
         if (!this.sharedMapData) return;
         
-        const { layer, startX, startY, tileIndex, brushSize = 1, isErasing } = operation;
+        const { layer, x, y, brushSize = 1, isErasing } = operation;
         
-        // Calculate the brush area
-        const area = calculateBrushArea(startX, startY, brushSize);
+        // Calculate the brush area for the current position only
+        const area = calculateBrushArea(x, y, brushSize);
         
         if (isErasing) {
             // Handle erasing - set all tiles in the area to -1
@@ -2411,7 +2252,7 @@ class RenderWorker {
         }
         
         if (this.debugMode) {
-            console.log(`RenderWorker: Drew brush at (${startX}, ${startY}) with size ${brushSize} and tile index ${tileIndex}`);
+            console.log(`RenderWorker: Drew brush at (${x}, ${y}) with size ${brushSize} and tile index ${tileIndex}`);
         }
     }
     

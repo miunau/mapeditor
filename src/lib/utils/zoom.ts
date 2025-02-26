@@ -1,4 +1,4 @@
-import type { Point } from './drawing';
+import type { Point } from '../types/drawing';
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;

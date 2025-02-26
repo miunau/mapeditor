@@ -4,8 +4,8 @@
 </script>
 
 <div class="Dialogs">
-    {#each dialogs as { name, Component } }
-        <Component />
+    {#each dialogs as { name, Component, props } }
+        <Component {...props} />
     {/each}
 </div>
 

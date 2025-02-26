@@ -1,6 +1,7 @@
 <script lang="ts">
-    import { editorFSM } from '../../lib/state/EditorStore.svelte.js';
-    import { drawTile } from '../../lib/drawTile';
+    import { editorFSM } from '$lib/state/EditorStore.svelte.js';
+    import type { Brush } from '$lib/types/drawing';
+    import { removeDialog } from './diag.svelte';
     import Dialog from './Dialog.svelte';
 
     let name: string | null = $state('');
@@ -82,7 +83,7 @@
 
     $effect(() => {
         if (editorFSM.context.currentBrush && editorFSM.context.currentBrush.type === 'custom') {
-            const brush = editorFSM.context.currentBrush.brush;
+            const brush = editorFSM.context.currentBrush;
             name = brush.name;
             width = brush.width;
             height = brush.height;
@@ -171,7 +172,7 @@
     }
 
     function closeDialog() {
-        editorFSM.send('setShowCustomBrushDialog', false);
+        removeDialog('custom-brush');
     }
 
     function updateBrushDimensions() {
@@ -257,10 +258,10 @@
                 <input 
                     id="world-aligned-repeat"
                     type="checkbox" 
-                    checked={(editorFSM.context.currentBrush?.type === 'custom' && editorFSM.context.currentBrush.brush.worldAligned)}
+                    checked={(editorFSM.context.currentBrush?.type === 'custom' && editorFSM.context.currentBrush.worldAligned)}
                     onchange={(e) => {
                         if (editorFSM.context.currentBrush && editorFSM.context.currentBrush.type === 'custom') {
-                            editorFSM.context.currentBrush.brush.worldAligned = e.currentTarget.checked;
+                            editorFSM.context.currentBrush.worldAligned = e.currentTarget.checked;
                         }
                     }}
                 />

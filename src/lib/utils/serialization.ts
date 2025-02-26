@@ -1,4 +1,4 @@
-import type { MapData, MapMetadata, MapDimensions, UncompressedMapData } from '$lib/managers/MapDataManager';
+import type { MapData, MapMetadata, MapDimensions } from '$lib/managers/MapDataManager.svelte.js';
 
 // Pack map data into a binary format
 export function packMapData(mapData: MapData, dimensions: MapDimensions): string {

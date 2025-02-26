@@ -1,12 +1,12 @@
 import type { Component } from "svelte";
 
-let dialogs = $state<{ name: string, Component: Component }[]>([]);
+let dialogs = $state<{ name: string, Component: Component, props: Record<string, any> }[]>([]);
 
-export function addDialog(name: string, dialog: Component) {
+export function addDialog(name: string, dialog: Component, props: Record<string, any> = {}) {
     if (dialogs.find(d => d.name === name)) {
         return;
     }
-    dialogs.push({ name, Component: dialog });
+    dialogs.push({ name, Component: dialog, props });
 }
 
 export function removeDialog(name: string) {

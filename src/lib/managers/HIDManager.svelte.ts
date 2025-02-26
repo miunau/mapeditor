@@ -2,6 +2,7 @@ import type { EditorContext } from "$lib/state/EditorStore.svelte";
 import type { FSM } from "$lib/utils/fsm.svelte";
 import { Renderer } from "$lib/renderer/Renderer.svelte.js";
 import { calculateZoomTransform, findClosestZoomLevel } from "$lib/utils/zoom";
+import type { Brush } from "$lib/types/drawing";
 
 export class HIDManager {
     private machine: FSM<EditorContext, any>;
@@ -12,6 +13,7 @@ export class HIDManager {
     private boundHandleMouseDown: (event: MouseEvent) => void;
     private boundHandleMouseMove: (event: MouseEvent) => void;
     private boundHandleMouseUp: (event: MouseEvent) => void;
+    private boundHandleMouseEnter: (event: MouseEvent) => void;
     private boundHandleKeyDown: (event: KeyboardEvent) => void;
     private boundHandleKeyUp: (event: KeyboardEvent) => void;
     private boundHandleResize: (event: UIEvent) => void;
@@ -46,6 +48,10 @@ export class HIDManager {
     private readonly KEYBOARD_DECELERATION = 0.92; // Match the INERTIA_DECAY for consistent feel
     private readonly KEYBOARD_MAX_SPEED = 20; // Maximum keyboard panning speed
 
+    // Track current mouse position for brush preview
+    private currentMouseX: number = 0;
+    private currentMouseY: number = 0;
+
     // Add a property for the resize timeout
     private _resizeTimeout: number | null = null;
 
@@ -57,6 +63,7 @@ export class HIDManager {
         this.boundHandleMouseDown = this.handleMouseDown.bind(this);
         this.boundHandleMouseMove = this.handleMouseMove.bind(this);
         this.boundHandleMouseUp = this.handleMouseUp.bind(this);
+        this.boundHandleMouseEnter = this.handleMouseEnter.bind(this);
         this.boundHandleKeyDown = this.handleKeyDown.bind(this);
         this.boundHandleKeyUp = this.handleKeyUp.bind(this);
         this.boundHandleResize = this.handleResize.bind(this);
@@ -68,6 +75,7 @@ export class HIDManager {
         this.canvas.addEventListener('wheel', this.boundHandleWheel);
         this.canvas.addEventListener('mousedown', this.boundHandleMouseDown);
         this.canvas.addEventListener('mousemove', this.boundHandleMouseMove);
+        this.canvas.addEventListener('mouseenter', this.boundHandleMouseEnter);
         window.addEventListener('mouseup', this.boundHandleMouseUp);
         window.addEventListener('keydown', this.boundHandleKeyDown);
         window.addEventListener('keyup', this.boundHandleKeyUp);
@@ -100,6 +108,7 @@ export class HIDManager {
         this.canvas.removeEventListener('wheel', this.boundHandleWheel);
         this.canvas.removeEventListener('mousedown', this.boundHandleMouseDown);
         this.canvas.removeEventListener('mousemove', this.boundHandleMouseMove);
+        this.canvas.removeEventListener('mouseenter', this.boundHandleMouseEnter);
         window.removeEventListener('mouseup', this.boundHandleMouseUp);
         window.removeEventListener('keydown', this.boundHandleKeyDown);
         window.removeEventListener('keyup', this.boundHandleKeyUp);
@@ -203,16 +212,30 @@ export class HIDManager {
             // Prevent default behavior (like autoscroll)
             event.preventDefault();
         } else if (this.machine.state === 'idle') {
-            const isErasing = event.button === 2;
-            this.machine.send('startDrawing', {
-                x: event.clientX,
-                y: event.clientY,
-                isErasing
-            });
+            // Convert screen coordinates to map coordinates
+            const mapCoords = this.screenToMapCoordinates(event.clientX, event.clientY);
+            if (mapCoords) {
+                console.log('HIDManager: Starting drawing at map coordinates:', mapCoords);
+                
+                const isErasing = event.button === 2;
+                this.machine.send('startDrawing', {
+                    x: event.clientX,
+                    y: event.clientY,
+                    isErasing,
+                    mapX: mapCoords.x,
+                    mapY: mapCoords.y
+                });
+            } else {
+                console.log('HIDManager: Click outside map area');
+            }
         }
     }
 
     private handleMouseMove(event: MouseEvent) {
+        // Always track the current mouse position
+        this.currentMouseX = event.clientX;
+        this.currentMouseY = event.clientY;
+        
         if (this.isPanning) {
             const currentTime = performance.now();
             
@@ -239,11 +262,33 @@ export class HIDManager {
                 this.machine.context.offsetY,
                 this.machine.context.zoomLevel
             );
-        } else if (this.machine.state === 'drawing') {
-            this.machine.send('continueShape', {
-                x: event.clientX,
-                y: event.clientY
-            });
+        } else {
+            // Convert screen coordinates to map coordinates
+            const mapCoords = this.screenToMapCoordinates(event.clientX, event.clientY);
+            
+            // Update brush preview regardless of whether we're drawing
+            if (mapCoords) {
+                // Send brush preview info to the renderer
+                this.renderer.handleMouseEvent('mousemove', {
+                    x: event.clientX,
+                    y: event.clientY,
+                    mapX: mapCoords.x,
+                    mapY: mapCoords.y,
+                    brushSize: this.machine.context.brushSize || 1
+                });
+            }
+            
+            // Handle drawing state
+            if (this.machine.state === 'drawing' && mapCoords) {
+                // For brush tool, draw directly at each position for smoother drawing
+                if (this.machine.context.currentTool === 'brush') {
+                    this.handleDrawTile(
+                        mapCoords.x, 
+                        mapCoords.y, 
+                        this.machine.context.isErasing
+                    );
+                }
+            }
         }
     }
 
@@ -263,42 +308,128 @@ export class HIDManager {
                 this.startInertia();
             }
         } else if (this.machine.state === 'drawing') {
+            // Convert screen coordinates to map coordinates for the final draw
+            const mapCoords = this.screenToMapCoordinates(event.clientX, event.clientY);
+            if (mapCoords && this.machine.context.currentTool === 'brush') {
+                // For brush tool, draw at the final position
+                this.handleDrawTile(
+                    mapCoords.x, 
+                    mapCoords.y, 
+                    this.machine.context.isErasing
+                );
+            }
+            
+            // End the drawing operation
             this.machine.send('stopDrawing');
+        }
+    }
+
+    private handleMouseEnter(event: MouseEvent) {
+        // Track the current mouse position
+        this.currentMouseX = event.clientX;
+        this.currentMouseY = event.clientY;
+        
+        // Initialize brush preview when mouse enters the canvas
+        const mapCoords = this.screenToMapCoordinates(event.clientX, event.clientY);
+        if (mapCoords) {
+            console.log('HIDManager: Mouse entered canvas at map coordinates:', mapCoords);
+            
+            // Send brush preview info to the renderer
+            this.renderer.handleMouseEvent('mousemove', {
+                x: event.clientX,
+                y: event.clientY,
+                mapX: mapCoords.x,
+                mapY: mapCoords.y,
+                brushSize: this.machine.context.brushSize || 1
+            });
         }
     }
 
     private handleKeyDown(event: KeyboardEvent) {
         let isArrowKey = false;
         let shouldStartPanning = false;
+
+        const key = event.key.toLowerCase();
         
         // Stop inertia when pressing keys
         this.stopInertia();
         
-        // Handle space key to center the map
-        if (event.key === ' ' || event.code === 'Space') {
-            // Center the map
-            this.renderer.centerMap();
-            return;
-        }
-        
-        // Update key state
-        switch (event.key) {
-            case 'ArrowLeft':
+        switch (key) {
+            case ' ':
+            case 'space':
+                // Center the map
+                this.renderer.centerMap();
+                return;
+
+            case 'w':
+                this.machine.context.paletteManager?.navigateBrushGrid(this.machine.context.currentBrush!.id, 'up');
+                return;
+
+            case 's':
+                this.machine.context.paletteManager?.navigateBrushGrid(this.machine.context.currentBrush!.id, 'down');
+                return;
+
+            case 'a':
+                this.machine.context.paletteManager?.navigateBrushGrid(this.machine.context.currentBrush!.id, 'left');
+                return;
+
+            case 'd':
+                this.machine.context.paletteManager?.navigateBrushGrid(this.machine.context.currentBrush!.id, 'right');
+                return;
+
+            case 'z':
+                // Decrease brush size (minimum 1)
+                const currentSize = this.machine.context.brushSize || 1;
+                const newSize = Math.max(1, currentSize - 1);
+                console.log('HIDManager: Decreasing brush size from', currentSize, 'to', newSize);
+                this.machine.send('setBrushSize', newSize);
+                
+                // Update brush preview with new size
+                this.updateBrushPreviewWithCurrentPosition(newSize);
+                return;
+
+            case 'g':
+                this.machine.send('selectTool', 'fill');
+                return;
+
+            case 'r':
+                this.machine.send('selectTool', 'rectangle');
+                return;
+
+            case 'e':
+                this.machine.send('selectTool', 'ellipse');
+                return;
+
+            case 'x':
+                // Increase brush size (reasonable maximum)
+                const curSize = this.machine.context.brushSize || 1;
+                const nextSize = Math.min(10, curSize + 1); // Max size of 10
+                console.log('HIDManager: Increasing brush size from', curSize, 'to', nextSize);
+                this.machine.send('setBrushSize', nextSize);
+                
+                // Update brush preview with new size
+                this.updateBrushPreviewWithCurrentPosition(nextSize);
+                return;
+
+            case 'arrowleft':
                 this.keyPanState.left = true;
                 shouldStartPanning = true;
                 isArrowKey = true;
                 break;
-            case 'ArrowRight':
+
+            case 'arrowright':
                 this.keyPanState.right = true;
                 shouldStartPanning = true;
                 isArrowKey = true;
                 break;
-            case 'ArrowUp':
+
+            case 'arrowup':
                 this.keyPanState.up = true;
                 shouldStartPanning = true;
                 isArrowKey = true;
                 break;
-            case 'ArrowDown':
+
+            case 'arrowdown':
                 this.keyPanState.down = true;
                 shouldStartPanning = true;
                 isArrowKey = true;
@@ -308,13 +439,6 @@ export class HIDManager {
         // Start panning if an arrow key was pressed
         if (shouldStartPanning) {
             this.startKeyboardPanning();
-        }
-        
-        // Only send non-arrow key events to the FSM
-        if (!isArrowKey && event.key !== ' ' && event.code !== 'Space') {
-            this.machine.send('keyDown', {
-                key: event.key
-            });
         }
     }
 
@@ -500,6 +624,143 @@ export class HIDManager {
         } else {
             // Stop inertia when velocity is too low
             this.inertiaActive = false;
+        }
+    }
+
+    /**
+     * Converts screen coordinates to map coordinates
+     * @param screenX The X coordinate in screen space
+     * @param screenY The Y coordinate in screen space
+     * @returns The map coordinates or null if outside the map
+     */
+    private screenToMapCoordinates(screenX: number, screenY: number): { x: number, y: number } | null {
+        const context = this.machine.context;
+        if (!context || !context.renderer) return null;
+        
+        // Get the canvas rect to convert client coordinates to canvas coordinates
+        const rect = this.canvas.getBoundingClientRect();
+        const canvasX = screenX - rect.left;
+        const canvasY = screenY - rect.top;
+        
+        // Apply inverse transform to get world coordinates
+        const worldX = (canvasX - context.offsetX) / context.zoomLevel;
+        const worldY = (canvasY - context.offsetY) / context.zoomLevel;
+        
+        // Convert world coordinates to tile coordinates
+        const tileX = Math.floor(worldX / context.tilemap!.tileWidth);
+        const tileY = Math.floor(worldY / context.tilemap!.tileHeight);
+        
+        // Check if the coordinates are within the map bounds
+        if (tileX >= 0 && tileX < context.mapWidth && 
+            tileY >= 0 && tileY < context.mapHeight) {
+            return { x: tileX, y: tileY };
+        }
+        
+        return null;
+    }
+
+    /**
+     * Handles drawing a tile at the specified map coordinates
+     * @param mapX The X coordinate in map space
+     * @param mapY The Y coordinate in map space
+     * @param isErasing Whether this is an erase operation
+     */
+    private handleDrawTile(mapX: number, mapY: number, isErasing: boolean = false) {
+        const context = this.machine.context;
+        if (!context || !context.renderer) return;
+        
+        // Get the current brush and layer
+        const currentBrush = context.currentBrush;
+        const currentLayer = context.currentLayer;
+        const brushSize = context.brushSize || 1;
+        
+        if (!currentBrush || currentLayer < 0) return;
+        
+        console.log('HIDManager: Drawing tile at', mapX, mapY, 'with brush size', brushSize);
+        
+        // Determine the tile index to draw
+        let tileIndex = -1; // Default to erasing
+        if (!isErasing) {
+            if (currentBrush.type === 'tile') {
+                tileIndex = currentBrush.tiles[0][0];
+            } else if (currentBrush.type === 'custom' && currentBrush) {
+                // For custom brushes, we need to handle them differently
+                this.handleDrawCustomBrush(mapX, mapY, currentBrush, currentLayer);
+                return;
+            }
+        }
+        
+        // Create a draw operation for the current position
+        const drawOp = {
+            type: 'start' as const,
+            tool: 'brush' as const,
+            brush: currentBrush,
+            layer: currentLayer,
+            x: mapX,
+            y: mapY,
+            tileIndex,
+            isErasing,
+            brushSize: brushSize
+        };
+
+        console.log('HIDManager: Drawing tile at', mapX, mapY, 'with brush size', brushSize);
+        
+        // Send the draw operation to the renderer
+        context.renderer.startDraw(drawOp);
+    }
+
+    /**
+     * Handles drawing a custom brush at the specified map coordinates
+     * @param mapX The X coordinate in map space
+     * @param mapY The Y coordinate in map space
+     * @param brush The custom brush to draw
+     * @param layer The layer to draw on
+     */
+    private handleDrawCustomBrush(mapX: number, mapY: number, brush: Brush, layer: number) {
+        const context = this.machine.context;
+        if (!context || !context.renderer || !context.mapDataManager) return;
+        
+        // Get the brush tiles
+        const tiles = brush.tiles;
+        if (!tiles || !tiles.length) return;
+        
+        // Calculate the area to update
+        const area = {
+            x: mapX,
+            y: mapY,
+            width: brush.width,
+            height: brush.height
+        };
+        
+        // Update the region with the custom brush tiles
+        context.mapDataManager.updateRegion(layer, mapX, mapY, tiles);
+        
+        // Tell the renderer to redraw the region
+        context.renderer.updateRegion(layer, area, tiles);
+    }
+
+    /**
+     * Updates the brush preview with the current mouse position and new brush size
+     */
+    private updateBrushPreviewWithCurrentPosition(newSize: number) {
+        // Use the tracked current mouse position
+        if (this.currentMouseX === 0 && this.currentMouseY === 0) {
+            // If we don't have a current mouse position yet, don't update the preview
+            return;
+        }
+        
+        // Convert screen coordinates to map coordinates
+        const mapCoords = this.screenToMapCoordinates(this.currentMouseX, this.currentMouseY);
+        
+        if (mapCoords) {
+            // Send brush preview info to the renderer with the new brush size
+            this.renderer.handleMouseEvent('mousemove', {
+                x: this.currentMouseX,
+                y: this.currentMouseY,
+                mapX: mapCoords.x,
+                mapY: mapCoords.y,
+                brushSize: newSize
+            });
         }
     }
 }
