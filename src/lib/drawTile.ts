@@ -1,7 +1,6 @@
-import type { MapEditor } from './mapeditor';
 import type { ReactiveMapEditor } from './MapEditor.svelte';
 
-type EditorType = MapEditor | ReactiveMapEditor;
+type EditorType = ReactiveMapEditor;
 
 // Action to draw tiles on canvas
 export function drawTile(node: HTMLCanvasElement, { editor, tileIndex }: { editor: EditorType, tileIndex: number }) {

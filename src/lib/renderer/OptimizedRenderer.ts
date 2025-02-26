@@ -6,9 +6,9 @@
  * data sharing between the main thread and worker.
  */
 
-import type { MapData } from '../utils/map';
-import type { RenderSettings } from '../state/EditorStore.svelte';
-import type { DrawOperation } from '../utils/drawing';
+import type { MapData, MapDataManager } from '$lib/managers/MapDataManager';
+import type { RenderSettings } from '$lib/utils/settings';
+import type { DrawOperation } from '$lib/utils/drawing';
 
 /**
  * Manages optimized rendering of tile-based maps using web workers and OffscreenCanvas
@@ -20,10 +20,12 @@ export class OptimizedRenderer {
     private _worker: Worker | null = null;
     /** Flag indicating if the renderer has been fully initialized */
     private isInitialized = false;
+    /** Map data manager */
+    private mapDataManager: MapDataManager | null = null;
     
     // Shared memory for map data
     /** Shared array containing the map tile data */
-    private sharedMapData: Int32Array | null = null;
+    private sharedMapData: SharedArrayBuffer | null = null;
     /** Width of the map in tiles */
     private mapWidth = 0;
     /** Height of the map in tiles */
@@ -259,26 +261,27 @@ export class OptimizedRenderer {
     async initialize(
         mapWidth: number,
         mapHeight: number,
+        layerCount: number,
         tileWidth: number,
         tileHeight: number,
         tileSpacing: number,
         tilemapUrl: string,
         canvasWidth: number,
         canvasHeight: number,
-        initialMapData?: MapData,
-        externalSharedBuffer?: SharedArrayBuffer
+        mapDataManager: MapDataManager
     ) {
         console.log('OptimizedRenderer: Initializing with dimensions:', {
             mapWidth,
             mapHeight,
+            layerCount,
             tileWidth,
             tileHeight,
             tileSpacing,
             canvasWidth,
             canvasHeight,
-            hasExternalBuffer: !!externalSharedBuffer,
-            hasInitialMapData: !!initialMapData
         });
+
+        this.mapDataManager = mapDataManager;
 
         // Ensure the canvas is properly sized before transferring it
         this.canvas.width = canvasWidth;
@@ -289,34 +292,10 @@ export class OptimizedRenderer {
         this.mapHeight = mapHeight;
         this.tileWidth = tileWidth;
         this.tileHeight = tileHeight;
-        this.layerCount = initialMapData ? initialMapData.length : 10;
+        this.layerCount = layerCount;
         
         // Set up shared map data
-        if (externalSharedBuffer) {
-            console.log('OptimizedRenderer: Using external shared buffer');
-            this.sharedMapData = new Int32Array(externalSharedBuffer);
-        } else if (initialMapData) {
-            console.log('OptimizedRenderer: Creating new shared buffer from initial data');
-            // Calculate buffer size
-            const bufferSize = mapWidth * mapHeight * this.layerCount;
-            
-            // Create shared buffer
-            const sharedBuffer = new SharedArrayBuffer(bufferSize * Int32Array.BYTES_PER_ELEMENT);
-            this.sharedMapData = new Int32Array(sharedBuffer);
-            
-            // Initialize with data
-            for (let layer = 0; layer < initialMapData.length; layer++) {
-                for (let y = 0; y < mapHeight; y++) {
-                    for (let x = 0; x < mapWidth; x++) {
-                        const index = this.getFlatIndex(layer, y, x);
-                        this.sharedMapData[index] = initialMapData[layer][y][x];
-                    }
-                }
-            }
-        } else {
-            console.error('OptimizedRenderer: No map data provided');
-            return;
-        }
+        this.sharedMapData = mapDataManager.getBuffer();
         
         // Create update flags buffer
         this.updateFlagsBuffer = new SharedArrayBuffer(this.layerCount * Int32Array.BYTES_PER_ELEMENT);
@@ -373,7 +352,7 @@ export class OptimizedRenderer {
                     tileHeight,
                     tileSpacing,
                     tilemapBlob,
-                    sharedMapData: this.sharedMapData.buffer,
+                    sharedMapData: this.sharedMapData,
                     updateFlags: this.updateFlagsBuffer,
                     mapDimensions: {
                         width: mapWidth,
@@ -428,14 +407,14 @@ export class OptimizedRenderer {
      * @param tileIndex - The new tile index
      */
     updateTile(layer: number, x: number, y: number, tileIndex: number) {
-        if (!this.sharedMapData || !this._worker || !this.updateFlags) {
+        if (!this.mapDataManager || !this._worker || !this.updateFlags) {
             console.error('OptimizedRenderer: Cannot update tile - not initialized');
             return;
         }
         
         // Update the shared buffer
         const index = this.getFlatIndex(layer, y, x);
-        this.sharedMapData[index] = tileIndex;
+        this.mapDataManager.setTile(layer, y, x, tileIndex);
         
         console.log('OptimizedRenderer: Updating tile at', { layer, x, y, index, tileIndex });
         
@@ -459,7 +438,7 @@ export class OptimizedRenderer {
      * @param tiles - 2D array of tile indices
      */
     updateRegion(layer: number, area: { x: number; y: number; width: number; height: number }, tiles: number[][]) {
-        if (!this.sharedMapData || !this._worker || !this.updateFlags) {
+        if (!this.mapDataManager || !this._worker || !this.updateFlags) {
             console.error('OptimizedRenderer: Cannot update region - not initialized');
             return;
         }
@@ -470,8 +449,8 @@ export class OptimizedRenderer {
         for (let y = 0; y < area.height; y++) {
             for (let x = 0; x < area.width; x++) {
                 const index = this.getFlatIndex(layer, area.y + y, area.x + x);
-                const oldValue = this.sharedMapData[index];
-                this.sharedMapData[index] = tiles[y][x];
+                const oldValue = this.mapDataManager.getTile(layer, area.y + y, area.x + x);
+                this.mapDataManager.setTile(layer, area.y + y, area.x + x, tiles[y][x]);
                 
                 console.log('OptimizedRenderer: Updated shared buffer at:', { 
                     layer, 
@@ -738,7 +717,7 @@ export class OptimizedRenderer {
         
         // Update shared map data if provided
         if (sharedMapData) {
-            this.sharedMapData = new Int32Array(sharedMapData);
+            //this.sharedMapData = new Int32Array(sharedMapData);
             console.log('OptimizedRenderer: Updated shared map data buffer');
         }
         

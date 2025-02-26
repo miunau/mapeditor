@@ -1,30 +1,31 @@
 <script lang="ts">
-    import { editorStore, type RenderSettings } from '../../lib/state/EditorStore.svelte';
+    import { editorFSM } from '$lib/state/EditorStore.svelte.js';
+    import type { RenderSettings } from '$lib/utils/settings.js';
     import Dialog from './Dialog.svelte';
+    import { removeDialog } from './diag.svelte.js';
+    import { onMount } from 'svelte';
 
     function closeDialog() {
-        editorStore.setShowSettingsDialog(false);
+        removeDialog("render-settings");
     }
 
     // Local copy of settings for editing
-    let settings = $state<RenderSettings>({ ...editorStore.renderSettings });
+    let settings = $state<RenderSettings>({ ...editorFSM.context.renderSettings });
 
     // Update settings when dialog is opened
-    $effect(() => {
-        if (editorStore.showSettingsDialog) {
-            settings = { ...editorStore.renderSettings };
-        }
+    onMount(() => {
+        settings = { ...editorFSM.context.renderSettings };
     });
 
     // Apply settings
     function applySettings() {
-        editorStore.updateRenderSettings(settings);
+        editorFSM.send('updateRenderSettings', settings);
     }
 
     // Reset settings to defaults
     function resetSettings() {
-        editorStore.resetRenderSettings();
-        settings = { ...editorStore.renderSettings };
+        editorFSM.send('resetRenderSettings');
+        settings = { ...editorFSM.context.renderSettings };
     }
 
     // Helper function to get LOD quality label
@@ -51,7 +52,7 @@
     }
 </script>
 
-<Dialog title="Render Settings" show={editorStore.showSettingsDialog} onClose={closeDialog}>
+<Dialog title="Render Settings" onClose={closeDialog}>
     {#snippet buttonArea()}
         <button class="apply-button" onclick={applySettings}>Apply</button>
         <button class="reset-button" onclick={resetSettings}>Reset</button>
@@ -169,7 +170,6 @@
 </Dialog>
 
 <style>
-   
     .fields {
         display: flex;
         flex-direction: column;

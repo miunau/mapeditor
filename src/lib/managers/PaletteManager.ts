@@ -1,7 +1,8 @@
-import type { Tilemap } from '../tilemap';
+
 import type { BrushManager } from './BrushManager';
-import type { Brush } from '../utils/brush';
-import { editorStore } from '../state/EditorStore.svelte';
+import type { Brush } from '../utils/drawing';
+import type { Tilemap } from '../utils/tilemap';
+import { editorFSM } from '../state/EditorStore.svelte';
 
 export class PaletteManager {
     private paletteX = 10;
@@ -9,10 +10,240 @@ export class PaletteManager {
     private hasShownHelpMessage = false;
     private readonly ADD_BRUSH_ID = 'add_brush';
 
+    private boundHandlePaletteMouseDown: (e: MouseEvent) => void;
+    private boundHandlePaletteMouseMove: (e: MouseEvent) => void;
+    private boundHandlePaletteMouseUp: (e: MouseEvent) => void;
+
     constructor(
         private tilemap: Tilemap,
         private brushManager: BrushManager
-    ) {}
+    ) {
+        this.boundHandlePaletteMouseDown = this.handlePaletteMouseDown.bind(this);
+        this.boundHandlePaletteMouseMove = this.handlePaletteMouseMove.bind(this);
+        this.boundHandlePaletteMouseUp = this.handlePaletteMouseUp.bind(this);
+    }
+
+    createCanvas(width: number, height: number) {
+        editorFSM.context.paletteCanvas!.style.position = 'absolute';
+        editorFSM.context.paletteCanvas!.style.left = '0px';  // Position it on the left
+        editorFSM.context.paletteCanvas!.style.top = '0px';   // with a small margin from the top
+        editorFSM.context.paletteCanvas!.style.zIndex = '20';  // Make sure it's above everything else
+        
+        // Set initial size - we'll adjust this based on content later
+        editorFSM.context.paletteCanvas!.width = width;  // Default width
+        editorFSM.context.paletteCanvas!.height = height; // Default height
+        
+        // Get the context for drawing the palette
+        editorFSM.context.paletteCtx = editorFSM.context.paletteCanvas!.getContext('2d', { alpha: true })!; // Use alpha context for transparency
+        editorFSM.context.paletteCtx.imageSmoothingEnabled = false;
+        
+        // Add it to the DOM as a sibling to the main canvas
+        if (editorFSM.context.canvas!.parentElement) {
+            editorFSM.context.canvas!.parentElement.appendChild(editorFSM.context.paletteCanvas!);
+        }
+
+        // Add event listeners for palette interaction
+        editorFSM.context.paletteCanvas!.addEventListener('mousedown', this.boundHandlePaletteMouseDown);
+        editorFSM.context.paletteCanvas!.addEventListener('mousemove', this.boundHandlePaletteMouseMove);
+        editorFSM.context.paletteCanvas!.addEventListener('mouseup', this.boundHandlePaletteMouseUp);
+        
+        // Also prevent context menu on the palette canvas
+        editorFSM.context.paletteCanvas!.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+
+
+    // Handle mouse events on the palette canvas
+    private handlePaletteMouseDown(e: MouseEvent) {
+        const rect = editorFSM.context.paletteCanvas!.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        console.log('MapEditor: Palette mouse down at', x, y);
+        
+        if (e.button === 0) { // Left click
+            // Get the tile position from the coordinates
+            const tilePos = this.getTileFromPaletteCoords(x, y);
+            if (tilePos) {
+                // Start tile selection
+                editorFSM.context.selectionStartX = tilePos.tileX;
+                editorFSM.context.selectionStartY = tilePos.tileY;
+                editorFSM.context.selectionEndX = tilePos.tileX;
+                editorFSM.context.selectionEndY = tilePos.tileY;
+                
+                // Select the single tile initially
+                const tileIndex = tilePos.tileY * this.tilemap.width + tilePos.tileX;
+                const brushId = `tile_${tileIndex}`;
+                
+                console.log('DEBUG - Palette Selection:', { 
+                    tileX: tilePos.tileX, 
+                    tileY: tilePos.tileY, 
+                    tileIndex, 
+                    brushId,
+                    tilemapWidth: this.tilemap.width,
+                    calculatedX: tileIndex % this.tilemap.width,
+                    calculatedY: Math.floor(tileIndex / this.tilemap.width)
+                });
+                
+                // Get the actual tile from the tilemap to verify it exists
+                const tileCanvas = this.tilemap.getTile(tileIndex);
+                if (tileCanvas) {
+                    console.log('DEBUG - Tile exists in tilemap:', { tileIndex });
+                } else {
+                    console.warn('DEBUG - Tile does NOT exist in tilemap:', { tileIndex });
+                }
+                
+                editorFSM.send('selectBrush', brushId);
+
+                // Redraw the palette to show the selection
+                this.drawPalette();
+            } else {
+                // Handle click on custom brushes or other elements
+                this.handlePaletteClick(x, y);
+            }
+        } else if (e.button === 2) { // Right click
+            this.handlePaletteRightClick(x, y);
+            // Prevent the context menu
+            e.preventDefault();
+        }
+    }
+
+    private handlePaletteMouseMove(e: MouseEvent) {
+        const rect = editorFSM.context.paletteCanvas!.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        if (editorFSM.context.isSelectingTiles && editorFSM.context.selectionStartX !== null && editorFSM.context.selectionStartY !== null) {
+            const tilePos = this.getTileFromPaletteCoords(x, y);
+            if (tilePos) {
+                editorFSM.context.selectionEndX = tilePos.tileX;
+                editorFSM.context.selectionEndY = tilePos.tileY;
+                
+                // Only enter selection mode if we're selecting more than one tile
+                const width = Math.abs((editorFSM.context.selectionEndX || 0) - editorFSM.context.selectionStartX) + 1;
+                const height = Math.abs((editorFSM.context.selectionEndY || 0) - editorFSM.context.selectionStartY) + 1;
+                if (width > 1 || height > 1) {
+                    editorFSM.context.isSelectingTiles = true;
+                    // Clear the single tile selection when entering drag mode
+                    this.brushManager?.selectBrush(null);
+                } else {
+                    editorFSM.context.isSelectingTiles = false;
+                    // Update the single tile selection
+                    const tileIndex = tilePos.tileY * this.tilemap.width + tilePos.tileX;
+                    const brushId = `tile_${tileIndex}`;
+                    
+                    console.log('DEBUG - Palette Mouse Move Selection:', { 
+                        tileX: tilePos.tileX, 
+                        tileY: tilePos.tileY, 
+                        tileIndex, 
+                        brushId,
+                        tilemapWidth: this.tilemap.width
+                    });
+                    
+                    this.brushManager?.selectBrush(brushId);
+                    editorFSM.send('selectTile', tileIndex);
+                }
+                
+                // Force a redraw of the palette
+                this.drawPalette();
+            }
+        }
+    }
+
+
+    // Custom brush methods
+    private createTemporaryBrushFromSelection() {
+        if (!this.brushManager) return;
+        console.log('Creating brush from selection');
+        if (editorFSM.context.selectionStartX === null || editorFSM.context.selectionStartY === null || 
+            editorFSM.context.selectionEndX === null || editorFSM.context.selectionEndY === null) {
+            console.log('Selection coordinates are invalid:', {
+                startX: editorFSM.context.selectionStartX,
+                startY: editorFSM.context.selectionStartY,
+                endX: editorFSM.context.selectionEndX,
+                endY: editorFSM.context.selectionEndY
+            });
+            return;
+        }
+
+        const startX = Math.min(editorFSM.context.selectionStartX, editorFSM.context.selectionEndX);
+        const startY = Math.min(editorFSM.context.selectionStartY, editorFSM.context.selectionEndY);
+        const endX = Math.max(editorFSM.context.selectionStartX, editorFSM.context.selectionEndX);
+        const endY = Math.max(editorFSM.context.selectionStartY, editorFSM.context.selectionEndY);
+
+        console.log('Selection bounds:', { startX, startY, endX, endY });
+
+        const width = endX - startX + 1;
+        const height = endY - startY + 1;
+        const tiles: number[][] = [];
+
+        console.log('Creating brush with dimensions:', { width, height });
+
+        // Create the tile array
+        for (let y = 0; y < height; y++) {
+            const row: number[] = [];
+            for (let x = 0; x < width; x++) {
+                const tileX = startX + x;
+                const tileY = startY + y;
+                const tileIndex = tileY * this.tilemap.width + tileX;
+                row.push(tileIndex);
+            }
+            tiles.push(row);
+        }
+
+        console.log('Created tile array:', tiles);
+
+        // Create and select the brush using the brush manager
+        const brush = this.brushManager.createCustomBrush(`${width}x${height} Selection`, tiles, this.tilemap);
+        console.log('Created brush:', brush);
+        
+        // Use editorStore to select the brush
+        editorFSM.send('selectCustomBrush', brush.id);
+        
+        console.log('Selected brush:', this.brushManager.getSelectedBrush());
+
+        // Reset selection state
+        editorFSM.context.isSelectingTiles = false;
+        editorFSM.context.selectionStartX = null;
+        editorFSM.context.selectionStartY = null;
+        editorFSM.context.selectionEndX = null;
+        editorFSM.context.selectionEndY = null;
+    }
+
+    createCustomBrush(name: string | null, tiles: number[][]): Brush {
+        if (!this.brushManager) throw new Error('BrushManager not initialized');
+        return this.brushManager.createCustomBrush(name || '', tiles, this.tilemap);
+    }
+
+    updateCustomBrush(brushId: string, name: string | null, tiles: number[][]): Brush | null {
+        if (!this.brushManager) return null;
+        return this.brushManager.updateBrush(brushId, name || '', tiles, this.tilemap);
+    }
+
+    deleteCustomBrush(brushId: string) {
+        this.brushManager?.deleteBrush(brushId);
+    }
+
+    private handlePaletteMouseUp(e: MouseEvent) {
+        // If we've been selecting tiles, create a custom brush
+        if (editorFSM.context.isSelectingTiles && 
+            editorFSM.context.selectionStartX !== null && editorFSM.context.selectionStartY !== null &&
+            editorFSM.context.selectionEndX !== null && editorFSM.context.selectionEndY !== null) {
+            
+            // Create a custom brush from the selection
+            this.createTemporaryBrushFromSelection();
+            
+            // Reset selection state
+            editorFSM.context.isSelectingTiles = false;
+            editorFSM.context.selectionStartX = null;
+            editorFSM.context.selectionStartY = null;
+            editorFSM.context.selectionEndX = null;
+            editorFSM.context.selectionEndY = null;
+            
+            // Force a redraw of the palette
+            this.drawPalette();
+        }
+    }
+
 
     getTileFromPaletteCoords(x: number, y: number): { tileX: number, tileY: number } | null {
         const tilesPerRow = this.tilemap.width;
@@ -65,17 +296,15 @@ export class PaletteManager {
             const tilePos = this.getTileFromPaletteCoords(x, y);
             if (tilePos) {
                 // Start tile selection
-                if (editorStore.editor) {
-                    editorStore.editor.selectionStartX = tilePos.tileX;
-                    editorStore.editor.selectionStartY = tilePos.tileY;
-                    editorStore.editor.selectionEndX = tilePos.tileX;
-                    editorStore.editor.selectionEndY = tilePos.tileY;
-                }
+                editorFSM.context.selectionStartX = tilePos.tileX;
+                editorFSM.context.selectionStartY = tilePos.tileY;
+                editorFSM.context.selectionEndX = tilePos.tileX;
+                editorFSM.context.selectionEndY = tilePos.tileY;
                 // Also select the single tile initially
                 const tileIndex = tilePos.tileY * this.tilemap.width + tilePos.tileX;
                 const brushId = `tile_${tileIndex}`;
                 this.brushManager.selectBrush(brushId);
-                editorStore.selectTile(tileIndex);
+                editorFSM.send('selectTile', tileIndex);
             }
             return;
         }
@@ -92,7 +321,7 @@ export class PaletteManager {
         if (addBrushPos && addBrushDim && 
             x >= addBrushPos.x && x <= addBrushPos.x + addBrushDim.width &&
             y >= addBrushPos.y && y <= addBrushPos.y + addBrushDim.height) {
-            editorStore.setShowCustomBrushDialog(true);
+            editorFSM.send('setShowCustomBrushDialog', true);
             return;
         }
 
@@ -117,9 +346,7 @@ export class PaletteManager {
             if (y >= currentY && y <= currentY + height && 
                 x >= currentX && x <= currentX + width) {
                 this.brushManager.selectBrush(brush.id);
-                if (editorStore.editor) {
-                    editorStore.selectCustomBrush(brush.id);
-                }
+                editorFSM.send('selectCustomBrush', brush.id);
                 return;
             }
 
@@ -163,8 +390,8 @@ export class PaletteManager {
 
             if (y >= currentY && y <= currentY + height && 
                 x >= currentX && x <= currentX + width) {
-                editorStore.setShowCustomBrushDialog(true);
-                editorStore.setCustomBrushDialogId(brush.id);
+                editorFSM.send('setShowCustomBrushDialog', true);
+                editorFSM.send('setCustomBrushDialogId', brush.id);
                 return;
             }
 
@@ -213,9 +440,9 @@ export class PaletteManager {
         return tilemapHeight + customBrushesHeight + totalHeight;
     }
 
-    drawPalette(ctx: CanvasRenderingContext2D): void {
+    drawPalette(): void {
         if (!this.tilemap.isLoaded()) return;
-
+        const ctx = editorFSM.context.paletteCtx!;
         // Draw built-in brushes (tiles)
         const builtInBrushes = this.brushManager.getBuiltInBrushes();
         for (const brush of builtInBrushes) {
@@ -231,28 +458,29 @@ export class PaletteManager {
         }
 
         // Draw help message if not shown before
-        this.drawHelpMessage(ctx);
+        this.drawHelpMessage();
 
         // Draw selection highlight
-        this.drawSelectionHighlight(ctx);
+        this.drawSelectionHighlight();
 
         // Draw selection rectangle if selecting tiles
-        if (editorStore.editor?.isSelectingTiles) {
+        if (editorFSM.context.isSelectingTiles) {
             this.drawSelectionRectangle(
                 ctx,
-                editorStore.editor.selectionStartX,
-                editorStore.editor.selectionStartY,
-                editorStore.editor.selectionEndX,
-                editorStore.editor.selectionEndY
+                editorFSM.context.selectionStartX,
+                editorFSM.context.selectionStartY,
+                editorFSM.context.selectionEndX,
+                editorFSM.context.selectionEndY
             );
         }
 
         // Draw custom brushes section
-        this.drawCustomBrushes(ctx);
+        this.drawCustomBrushes();
     }
 
-    private drawHelpMessage(ctx: CanvasRenderingContext2D): void {
+    private drawHelpMessage(): void {
         if (this.hasShownHelpMessage) return;
+        const ctx = editorFSM.context.paletteCtx!;
 
         const tilesPerRow = this.tilemap.width;
         const tilemapWidth = tilesPerRow * (this.tilemap.tileWidth + this.tilemap.spacing);
@@ -287,9 +515,10 @@ export class PaletteManager {
         });
     }
 
-    private drawSelectionHighlight(ctx: CanvasRenderingContext2D): void {
+    private drawSelectionHighlight(): void {
         const selectedBrush = this.brushManager.getSelectedBrush();
         if (!selectedBrush) return;
+        const ctx = editorFSM.context.paletteCtx!;
 
         let highlightX: number;
         let highlightY: number;
@@ -337,8 +566,9 @@ export class PaletteManager {
         );
     }
 
-    private drawCustomBrushes(ctx: CanvasRenderingContext2D): void {
+    private drawCustomBrushes(): void {
         // Draw custom brushes first
+        const ctx = editorFSM.context.paletteCtx!;
         const brushSectionY = this.paletteY + Math.ceil(this.tilemap.width * this.tilemap.height / this.tilemap.width) * 
             (this.tilemap.tileHeight + this.tilemap.spacing) + this.tilemap.spacing;
         

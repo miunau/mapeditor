@@ -1,28 +1,32 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
     import Dialog from './Dialog.svelte';
-
+    import { removeDialog } from './diag.svelte.js';
+    import { onMount } from 'svelte';
     function closeDialog() {
-        editorStore.setShowShortcuts(false);
+        removeDialog("help");
     }
 
     let audio: HTMLAudioElement | null = $state(null);
 
-    $effect(() => {
-        if (audio && editorStore.showShortcuts) {
+    onMount(() => {
+        if (audio) {
+            audio.currentTime = 0;
+            audio.volume = 0.5;
             audio.play();
         }
     });
 </script>
 
-<Dialog title="Help" show={editorStore.showShortcuts} onClose={closeDialog}>
+<Dialog title="Help" onClose={closeDialog}>
     <audio src="/TADA.mp3" bind:this={audio}></audio>
     {#snippet buttonArea()}
         <div class="button-container">
             <button class="close-button" onclick={closeDialog}>Close</button>
         </div>
     {/snippet}
-    <img src="/miu.png" alt="miunau" class="miunau-logo">
+    <figure>
+        <img src="/miu.png" alt="miunau" class="miunau-logo">
+    </figure>
     <h4>Welcome!</h4>
     <p>This is a tilemap based map editor by <a href="https://miunau.com" target="_blank">miunau</a>. Default tilemap is by <a href="https://kenney.nl" target="_blank">kenney</a>. Uses <a href="https://jdan.github.io/98.css/" target="_blank">98.css</a>. Thanks!</p>
     <p>Select a tile from the palette, choose your tool, and start creating!<br>You can use layers to organize different elements of your map (e.g., background, terrain, objects).</p>
@@ -77,16 +81,6 @@
         gap: 0px 24px;
     }
 
-    img {
-        display: block;
-        width: 100%;
-        object-fit: cover;
-        max-height: 250px;
-        margin: 0 auto;
-        padding: 2px;
-        box-shadow: -1px -1px #0a0a0a, inset 1px 1px #fff, inset -2px -2px grey, inset 2px 2px #dfdfdf;
-    }
-
     li:has(strong) {
         grid-column: 1 / -1;
         margin: 16px 0 10px 0;
@@ -113,4 +107,13 @@
         display: flex;
         justify-content: flex-end;
     }
+
+    figure {
+        max-height: 250px;
+    }
+
+    img {
+        max-height: 250px;
+    }
+
 </style> 

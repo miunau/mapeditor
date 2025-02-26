@@ -1,6 +1,5 @@
 import type { RenderSettings } from '../utils/settings.js';
-import type { DrawOperation, BrushPatternSource } from '../utils/drawing.js';
-import type { Point, Rect } from '../utils/coordinates.js';
+import type { Point, Rect, DrawOperation, BrushPatternSource } from '../utils/drawing.js';
 
 // Calculate brush area
 function calculateBrushArea(x: number, y: number, size: number): Rect {
@@ -256,12 +255,16 @@ class RenderWorker {
         this.debugMode = debugMode;
         self.onmessage = this.handleMessage.bind(this);
         
-        // Add better error handling
         self.onerror = (error) => {
             console.error('RenderWorker: Unhandled error:', error);
         };
         
         console.log('RenderWorker: Worker initialized');
+
+        self.postMessage({
+            type: 'initialized',
+            message: 'RenderWorker initialized'
+        });
     }
 
     private handleMessage(e: MessageEvent) {

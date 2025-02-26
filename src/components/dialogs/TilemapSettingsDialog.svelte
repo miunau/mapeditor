@@ -1,27 +1,29 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
+    import { editorFSM } from '$lib/state/EditorStore.svelte.js';
+    import type { TilemapSettings } from '$lib/utils/settings';
     import Dialog from './Dialog.svelte';
+    import { removeDialog } from './diag.svelte.js';
+    import { onMount } from 'svelte';
 
     let fileInput: HTMLInputElement;
-    let settings = $state({
-        url: '',
+    let settings = $state<TilemapSettings>({
+        imageUrl: '',
         tileWidth: 16,
         tileHeight: 16,
         spacing: 1
     });
 
-    $effect(() => {
-        if (editorStore.showTilemapDialog && editorStore.editor) {
-            settings = editorStore.editor.getTilemapSettings();
-        }
+    onMount(() => {
+        settings = editorFSM.context.tilemap?.getSettings() ?? {
+            imageUrl: '/tilemap.png',
+            tileWidth: 16,
+            tileHeight: 16,
+            spacing: 1
+        };
     });
 
     function closeDialog() {
-        // Reset to current settings when closing without applying
-        if (editorStore.editor) {
-            settings = editorStore.editor.getTilemapSettings();
-        }
-        editorStore.setShowTilemapDialog(false);
+        removeDialog("tilemap-settings");
     }
 
     async function handleFileSelect(e: Event) {
@@ -30,33 +32,24 @@
             const file = input.files[0];
             // Create a blob URL for the selected file
             const url = URL.createObjectURL(file);
-            settings.url = url;
+            settings.imageUrl = url;
         }
     }
 
     // Cleanup blob URL when dialog is closed
     $effect(() => {
-        if (!editorStore.showTilemapDialog) {
-            if (settings.url.startsWith('blob:')) {
-                URL.revokeObjectURL(settings.url);
-            }
-            if (fileInput) {
-                fileInput.value = '';
-            }
+        if (settings.imageUrl.startsWith('blob:')) {
+            URL.revokeObjectURL(settings.imageUrl);
+        }
+        if (fileInput) {
+            fileInput.value = '';
         }
     });
 
     async function updateSettings() {
-        if (!editorStore.editor) return;
-        
         try {
-            await editorStore.editor.changeTilemap(
-                settings.url,
-                settings.tileWidth,
-                settings.tileHeight,
-                settings.spacing
-            );
-            editorStore.setShowTilemapDialog(false);
+            await editorFSM.send('updateTilemapSettings', settings);
+            closeDialog();
         } catch (error) {
             console.error('Failed to update tilemap settings:', error);
             alert('Failed to update tilemap settings. Please check the values.');
@@ -64,15 +57,15 @@
     }
 </script>
 
-<Dialog title="Tilemap Settings" onClose={closeDialog} show={editorStore.showTilemapDialog}>
+<Dialog title="Tilemap Settings" onClose={closeDialog}>
     {#snippet buttonArea()}
         <button onclick={updateSettings}>Apply</button>
         <button onclick={closeDialog}>Cancel</button>
     {/snippet}
 
-    {#if settings.url}
+    {#if settings.imageUrl}
         <div class="image-preview">
-            <img src={settings.url} alt="Tilemap preview" />
+            <img src={settings.imageUrl} alt="Tilemap preview" />
         </div>
     {/if}
     <div class="dialog-content">

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
+    import { editorFSM } from '../../lib/state/EditorStore.svelte.js';
     import { drawTile } from '../../lib/drawTile';
     import Dialog from './Dialog.svelte';
 
@@ -17,14 +17,12 @@
     let draggedPaletteTile = $state<number | null>(null);
 
     // Compute the display tile size (2x actual size, max 32px)
-    let displayTileSize = $derived(Math.min(32, (editorStore.editor?.tilemap.tileWidth || 16) * 2));
+    let displayTileSize = $derived(Math.min(32, (editorFSM.context.tilemap?.tileWidth || 16) * 2));
 
     $inspect(displayTileSize);
 
     // Track shift key state
     function handleKeyDown(e: KeyboardEvent) {
-        if (!editorStore.showCustomBrushDialog) return;
-        
         if (e.target instanceof HTMLInputElement) return;
 
         // Track shift key state
@@ -36,8 +34,8 @@
             }
         }
 
-        const tilemapWidth = editorStore.editor?.tilemap.width || 0;
-        const tilemapHeight = editorStore.editor?.tilemap.height || 0;
+        const tilemapWidth = editorFSM.context.tilemap?.width || 0;
+        const tilemapHeight = editorFSM.context.tilemap?.height || 0;
         const totalTiles = tilemapWidth * tilemapHeight;
 
         switch (e.key.toLowerCase()) {
@@ -83,16 +81,14 @@
     }
 
     $effect(() => {
-        if (editorStore.showCustomBrushDialog && editorStore.customBrushDialogId) {
-            const brush = editorStore.customBrush;
-            if (brush && brush.id === editorStore.customBrushDialogId) {
-                name = brush.name;
-                width = brush.width;
-                height = brush.height;
-                tiles = brush.tiles.map(row => [...row]);
-                selectedTile = -1;
-            }
-        } else if (editorStore.showCustomBrushDialog) {
+        if (editorFSM.context.currentBrush && editorFSM.context.currentBrush.type === 'custom') {
+            const brush = editorFSM.context.currentBrush.brush;
+            name = brush.name;
+            width = brush.width;
+            height = brush.height;
+            tiles = brush.tiles.map(row => [...row]);
+            selectedTile = -1;
+        } else {
             // Initialize empty brush pattern
             tiles = Array(height).fill(null)
                 .map(() => Array(width).fill(-1));
@@ -100,15 +96,13 @@
     });
 
     $effect(() => {
-        if (editorStore.showCustomBrushDialog) {
-            // Add event listeners for keyboard events
-            window.addEventListener('keydown', handleKeyDown);
-            window.addEventListener('keyup', handleKeyUp);
-            return () => {
-                window.removeEventListener('keydown', handleKeyDown);
-                window.removeEventListener('keyup', handleKeyUp);
-            };
-        }
+        // Add event listeners for keyboard events
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+        };
     });
 
     function handleTileClick(x: number, y: number) {
@@ -161,23 +155,23 @@
     }
 
     function handleSave() {
-        if (editorStore.customBrushDialogId) {
-            editorStore.editor?.updateCustomBrush(editorStore.customBrushDialogId, name, tiles);
+        if (editorFSM.context.currentBrush && typeof editorFSM.context.currentBrush === 'object') {
+            editorFSM.send('updateCustomBrush', { name, tiles });
         } else {
-            editorStore.editor?.createCustomBrush(name, tiles);
+            editorFSM.send('createCustomBrush', { name, tiles });
         }
         closeDialog();
     }
 
     function handleDelete() {
-        if (editorStore.customBrushDialogId) {
-            editorStore.editor?.deleteCustomBrush(editorStore.customBrushDialogId);
+        if (editorFSM.context.currentBrush && typeof editorFSM.context.currentBrush === 'object') {
+            editorFSM.send('deleteCustomBrush', { name, tiles });
         }
         closeDialog();
     }
 
     function closeDialog() {
-        editorStore.setShowCustomBrushDialog(false);
+        editorFSM.send('setShowCustomBrushDialog', false);
     }
 
     function updateBrushDimensions() {
@@ -215,19 +209,18 @@
 </script>
 
 <Dialog 
-    title={editorStore.customBrushDialogId ? 'Edit Custom Brush' : 'Create Custom Brush'} 
-    show={editorStore.showCustomBrushDialog} 
+    title={editorFSM.context.currentBrush ? 'Edit Custom Brush' : 'Create Custom Brush'} 
     onClose={closeDialog}
 >
     {#snippet buttonArea()}
         <div class="button-area">
             <div class="left">
-                {#if editorStore.customBrushDialogId}
+                {#if editorFSM.context.currentBrush}
                     <button class="delete" onclick={handleDelete}>Delete</button>
                 {/if}
             </div>
             <div class="right">
-                <button onclick={handleSave}>{editorStore.customBrushDialogId ? 'Save' : 'Create'}</button>
+                <button onclick={handleSave}>{editorFSM.context.currentBrush ? 'Save' : 'Create'}</button>
                 <button onclick={closeDialog}>Cancel</button>
             </div>
         </div>
@@ -264,8 +257,12 @@
                 <input 
                     id="world-aligned-repeat"
                     type="checkbox" 
-                    checked={editorStore.editor?.useWorldAlignedRepeat}
-                    onchange={(e) => editorStore.editor && (editorStore.editor.useWorldAlignedRepeat = e.currentTarget.checked)}
+                    checked={(editorFSM.context.currentBrush?.type === 'custom' && editorFSM.context.currentBrush.brush.worldAligned)}
+                    onchange={(e) => {
+                        if (editorFSM.context.currentBrush && editorFSM.context.currentBrush.type === 'custom') {
+                            editorFSM.context.currentBrush.brush.worldAligned = e.currentTarget.checked;
+                        }
+                    }}
                 />
                 <label for="world-aligned-repeat">
                     World-aligned repeat
@@ -285,35 +282,32 @@
                     >
                         ❌
                     </button>
-                    {#if editorStore.editor}
-                        <div class="tilemap-grid" style="--tilemap-width: {editorStore.editor.tilemap.width}">
-                            {#each Array(editorStore.editor.tilemap.width * editorStore.editor.tilemap.height) as _, i}
-                                <button 
-                                    class="tile-cell button-none"
-                                    class:selected={selectedTile === i}
-                                    aria-label={`Select tile ${i}`}
-                                    onclick={() => selectedTile = i}
-                                    draggable="true"
-                                    ondragstart={(e) => {
-                                        e.dataTransfer?.setData('text/plain', i.toString());
-                                        draggedPaletteTile = i;
-                                    }}
-                                    ondragend={() => {
-                                        draggedPaletteTile = null;
-                                    }}
-                                    tabindex="-1"
-                                    style="--tile-size: {displayTileSize}px"
-                                >
-                                    <canvas 
-                                        width={editorStore.editor.tilemap.tileWidth}
-                                        height={editorStore.editor.tilemap.tileHeight}
-                                        style="width: var(--tile-size); height: var(--tile-size); image-rendering: pixelated;"
-                                        use:drawTile={{ editor: editorStore.editor, tileIndex: i }}
-                                    ></canvas>
-                                </button>
-                            {/each}
-                        </div>
-                    {/if}
+                    <div class="tilemap-grid" style="--tilemap-width: {editorFSM.context.tilemap!.width}">
+                        {#each Array(editorFSM.context.tilemap?.width! * editorFSM.context.tilemap?.height!) as _, i}
+                            <button 
+                                class="tile-cell button-none"
+                                class:selected={selectedTile === i}
+                                aria-label={`Select tile ${i}`}
+                                onclick={() => selectedTile = i}
+                                draggable="true"
+                                ondragstart={(e) => {
+                                    e.dataTransfer?.setData('text/plain', i.toString());
+                                    draggedPaletteTile = i;
+                                }}
+                                ondragend={() => {
+                                    draggedPaletteTile = null;
+                                }}
+                                tabindex="-1"
+                                style="--tile-size: {displayTileSize}px"
+                            >
+                                <canvas 
+                                    width={editorFSM.context.tilemap!.tileWidth}
+                                    height={editorFSM.context.tilemap!.tileHeight}
+                                    style="width: var(--tile-size); height: var(--tile-size); image-rendering: pixelated;"
+                                ></canvas>
+                            </button>
+                        {/each}
+                    </div>
                 </div>
             </div>
 
@@ -355,25 +349,20 @@
                                 tabindex="-1"
                                 style="--tile-size: {displayTileSize}px"
                             >
-                                {#if tile !== -1 && editorStore.editor}
+                                {#if tile !== -1}
                                     <canvas 
-                                        width={editorStore.editor.tilemap.tileWidth}
-                                        height={editorStore.editor.tilemap.tileHeight}
+                                        width={editorFSM.context.tilemap!.tileWidth}
+                                        height={editorFSM.context.tilemap!.tileHeight}
                                         style="width: var(--tile-size); height: var(--tile-size); image-rendering: pixelated;"
-                                        use:drawTile={{ editor: editorStore.editor, tileIndex: tile }}
                                     ></canvas>
                                 {/if}
-                                {#if (isDragging && dragTarget?.x === x && dragTarget?.y === y && dragSource && editorStore.editor) || 
-                                    (!isDragging && previewTarget?.x === x && previewTarget?.y === y && draggedPaletteTile !== null && editorStore.editor)}
+                                {#if (isDragging && dragTarget?.x === x && dragTarget?.y === y && dragSource) || 
+                                    (!isDragging && previewTarget?.x === x && previewTarget?.y === y && draggedPaletteTile !== null)}
                                     <canvas 
                                         class="preview-tile"
-                                        width={editorStore.editor.tilemap.tileWidth}
-                                        height={editorStore.editor.tilemap.tileHeight}
+                                        width={editorFSM.context.tilemap!.tileWidth}
+                                        height={editorFSM.context.tilemap!.tileHeight}
                                         style="width: var(--tile-size); height: var(--tile-size); image-rendering: pixelated;"
-                                        use:drawTile={{ 
-                                            editor: editorStore.editor, 
-                                            tileIndex: isDragging && dragSource ? tiles[dragSource.y][dragSource.x] : (draggedPaletteTile ?? 0)
-                                        }}
                                     ></canvas>
                                 {/if}
                             </button>

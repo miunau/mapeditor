@@ -1,54 +1,32 @@
 <script lang="ts">
-    import { editorStore } from '../lib/state/EditorStore.svelte';
+    import { editorFSM } from '../lib/state/EditorStore.svelte';
     import { calculateZoomTransform, findClosestZoomLevel } from '../lib/utils/zoom';
     import type { ZoomLevel } from '../lib/utils/zoom';
     import IconButton from './IconButton.svelte';
     import IconAdjustment from './icons/IconAdjustment.svelte';
     import IconBrush from './icons/IconBrush.svelte';
-  import IconEllipse from './icons/IconEllipse.svelte';
+    import IconEllipse from './icons/IconEllipse.svelte';
     import IconExport from './icons/IconExport.svelte';
     import IconGrid from './icons/IconGrid.svelte';
     import IconImport from './icons/IconImport.svelte';
     import IconInfo from './icons/IconInfo.svelte';
     import IconLayer from './icons/IconLayer.svelte';
-  import IconMagnifyingGlass from './icons/IconMagnifyingGlass.svelte';
+    import IconMagnifyingGlass from './icons/IconMagnifyingGlass.svelte';
     import IconNewFile from './icons/IconNewFile.svelte';
     import IconPaintBucket from './icons/IconPaintBucket.svelte';
     import IconRectangle from './icons/IconRectangle.svelte';
     import IconResize from './icons/IconResize.svelte';
     import IconZoomIn from './icons/IconZoomIn.svelte';
     import IconZoomOut from './icons/IconZoomOut.svelte';
+    import LayerDialog from './dialogs/LayerDialog.svelte';
+  import { addDialog } from './dialogs/diag.svelte';
 
     function resetZoom() {
-        const rect = editorStore.canvas?.getBoundingClientRect();
-        if (!rect) return;
-        
-        const transform = calculateZoomTransform(
-            1 as ZoomLevel,
-            editorStore.zoomLevel,
-            { x: rect.width / 2, y: rect.height / 2 },
-            { x: editorStore.offsetX, y: editorStore.offsetY }
-        );
-        editorStore.setZoom(transform.zoom as ZoomLevel, { x: transform.offset.x, y: transform.offset.y });
+        editorFSM.send('setZoom', 1);
     }
 
     function handleToolbarZoom(direction: 'up' | 'down') {
-        const rect = editorStore.canvas?.getBoundingClientRect();
-        if (!rect) return;
-
-        const newZoom = findClosestZoomLevel(editorStore.zoomLevel, direction, 'coarse');
-        
-        // Calculate the world point at the center of the viewport
-        const worldX = (-editorStore.offsetX + rect.width / 2) / editorStore.zoomLevel;
-        const worldY = (-editorStore.offsetY + rect.height / 2) / editorStore.zoomLevel;
-
-        // Calculate the new offset to keep this world point at the center
-        const newOffset = {
-            x: -(worldX * newZoom) + rect.width / 2,
-            y: -(worldY * newZoom) + rect.height / 2
-        };
-
-        editorStore.setZoom(newZoom, newOffset);
+        editorFSM.send('setZoom', findClosestZoomLevel(editorFSM.context.zoomLevel, direction, 'coarse'));
     }
 
     let audioContext: AudioContext | null = null;
@@ -156,23 +134,22 @@
     }
 </script>
 
-{#if editorStore.editor}
 <div class="controls">
-    <IconButton Icon={IconGrid} title="Toggle grid (V)" onclick={() => playClickSound(() => editorStore.editor?.toggleGrid())} active={editorStore.showGrid}>
+    <IconButton Icon={IconGrid} title="Toggle grid (V)" onclick={() => playClickSound(() => editorFSM.send('toggleGrid'))} active={editorFSM.context.showGrid}>
         Grid (V)
     </IconButton>
     <div class="brush-controls">
         <div class="tool-buttons">
-            <IconButton Icon={IconBrush} title="Brush tool (B)" onclick={() => playClickSound(() => editorStore.selectTool('brush'))} active={editorStore.currentTool === 'brush'}>
+            <IconButton Icon={IconBrush} title="Brush tool (B)" onclick={() => playClickSound(() => editorFSM.send('selectTool', 'brush'))} active={editorFSM.context.currentTool === 'brush'}>
                 Brush (B)
             </IconButton>
-            <IconButton Icon={IconPaintBucket} title="Flood fill tool (G)" onclick={() => playClickSound(() => editorStore.selectTool('fill'))} active={editorStore.currentTool === 'fill'}>
+            <IconButton Icon={IconPaintBucket} title="Flood fill tool (G)" onclick={() => playClickSound(() => editorFSM.send('selectTool', 'fill'))} active={editorFSM.context.currentTool === 'fill'}>
                 Fill (G)
             </IconButton>
-            <IconButton Icon={IconRectangle} title="Rectangle tool (R)" onclick={() => playClickSound(() => editorStore.selectTool('rectangle'))} active={editorStore.currentTool === 'rectangle'}>
+            <IconButton Icon={IconRectangle} title="Rectangle tool (R)" onclick={() => playClickSound(() => editorFSM.send('selectTool', 'rectangle'))} active={editorFSM.context.currentTool === 'rectangle'}>
                 Rect (R)
             </IconButton>
-            <IconButton Icon={IconEllipse} title="Ellipse tool (E)" onclick={() => playClickSound(() => editorStore.selectTool('ellipse'))} active={editorStore.currentTool === 'ellipse'}>
+            <IconButton Icon={IconEllipse} title="Ellipse tool (E)" onclick={() => playClickSound(() => editorFSM.send('selectTool', 'ellipse'))} active={editorFSM.context.currentTool === 'ellipse'}>
                 Ellipse (E)
             </IconButton>
         </div>
@@ -181,13 +158,13 @@
         <span><IconBrush /> Size (Z/X)</span>
         <div class="buttons">
             <button 
-                onclick={() => playClickSound(() => editorStore.setBrushSize(editorStore.brushSize - 1))}
+                onclick={() => playClickSound(() => editorFSM.send('setBrushSize', editorFSM.context.brushSize - 1))}
                 title="Decrease brush size (Z)"
                 class="small bold"
             >-</button>
-            <span class="brush-size">{editorStore.brushSize}</span>
+            <span class="brush-size">{editorFSM.context.brushSize}</span>
             <button 
-                onclick={() => playClickSound(() => editorStore.setBrushSize(editorStore.brushSize + 1))}
+                onclick={() => playClickSound(() => editorFSM.send('setBrushSize', editorFSM.context.brushSize + 1))}
                 title="Increase brush size (X)"
                 class="small bold"
             >+</button>
@@ -196,37 +173,28 @@
     <div class="stack">
         <span>
             <IconLayer /> Layers (0-9)
-            <button class="small" onclick={() => playClickSound(() => editorStore.setShowLayerDialog(true))}>Edit..</button>
+            <button class="small" onclick={() => playClickSound(() => addDialog("layers", LayerDialog))}>Edit..</button>
         </span>
         <div class="buttons">
             <button 
-                class:active={editorStore.currentLayer === -1}
-                onclick={() => editorStore.selectLayer(-1)}
+                class:active={editorFSM.context.currentLayer === -1}
+                onclick={() => editorFSM.send('selectLayer', -1)}
                 title="Show all layers (press §)"
                 class="small bold"
             >
                 All
             </button>
-            {#each Array(9) as _, i}
+            {#each Array(editorFSM.context.layerCount) as _, i}
                 <button 
-                    class:active={editorStore.currentLayer === i}
-                    onclick={() => playClickSound(() => editorStore.selectLayer(i))}
+                    class:active={editorFSM.context.currentLayer === i}
+                    onclick={() => playClickSound(() => editorFSM.send('selectLayer', i))}
                     class="small"
                     title="Select layer {i + 1} (press {i + 1})"
-                    disabled={!editorStore.layerVisibility[i]}
+                    disabled={!editorFSM.context.layerVisibility[i]}
                 >
                     {i + 1}
                 </button>
             {/each}
-            <button 
-                class:active={editorStore.currentLayer === 9}
-                onclick={() => playClickSound(() => editorStore.selectLayer(9))}
-                title="Select layer 10 (press 0)"
-                class="small"
-                disabled={!editorStore.layerVisibility[9]}
-            >
-                10
-            </button>
         </div>
     </div>
     <div class="stack">
@@ -245,7 +213,7 @@
                 onclick={() => playClickSound(resetZoom)}
                 title="Reset zoom (Ctrl/Cmd + 0)"
                 class="zoom-reset"
-            >{Math.round(editorStore.zoomLevel * 100)}%</button>
+            >{Math.round(editorFSM.context.zoomLevel * 100)}%</button>
             <button 
                 onclick={() => playClickSound(() => handleToolbarZoom('up'))}
                 title="Zoom in (+)"
@@ -256,7 +224,6 @@
         </div>
     </div>
 </div>
-{/if}
 
 <style>
     .controls {

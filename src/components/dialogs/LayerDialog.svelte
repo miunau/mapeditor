@@ -1,10 +1,10 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte';
     import IconDrag from '../icons/IconDrag.svelte';
+    import { removeDialog } from './diag.svelte.js';
     import Dialog from './Dialog.svelte';
-
+    import { editorFSM } from '$lib/state/EditorStore.svelte.js';
     function closeDialog() {
-        editorStore.setShowLayerDialog(false);
+        removeDialog("layers");
     }
 
     let layerNames = $state(Array(10).fill('').map((_, i) => `Layer ${i + 1}`));
@@ -22,7 +22,7 @@
         if (draggedLayer !== null && draggedLayer !== targetIndex) {
             // Create new arrays for names and visibilities
             const newNames = [...layerNames];
-            const visibilities = [...editorStore.layerVisibility];
+            const visibilities = [...editorFSM.context.layerVisibility];
             
             // Store the dragged items
             const draggedName = newNames[draggedLayer];
@@ -38,19 +38,19 @@
             
             // Update the arrays
             layerNames = newNames;
-            editorStore.toggleLayerVisibility(draggedLayer);
-            editorStore.toggleLayerVisibility(targetIndex);
+            editorFSM.send('toggleLayerVisibility', draggedLayer);
+            editorFSM.send('toggleLayerVisibility', targetIndex);
             
             // Move the layer in the editor
-            editorStore.editor?.moveLayer(draggedLayer, targetIndex);
+            editorFSM.send('moveLayer', draggedLayer, targetIndex);
             
             // Update current layer selection if needed
-            if (editorStore.currentLayer === draggedLayer) {
-                editorStore.selectLayer(targetIndex);
-            } else if (editorStore.currentLayer > draggedLayer && editorStore.currentLayer <= targetIndex) {
-                editorStore.selectLayer(editorStore.currentLayer - 1);
-            } else if (editorStore.currentLayer < draggedLayer && editorStore.currentLayer >= targetIndex) {
-                editorStore.selectLayer(editorStore.currentLayer + 1);
+            if (editorFSM.context.currentLayer === draggedLayer) {
+                editorFSM.send('selectLayer', targetIndex);
+            } else if (editorFSM.context.currentLayer > draggedLayer && editorFSM.context.currentLayer <= targetIndex) {
+                editorFSM.send('selectLayer', editorFSM.context.currentLayer - 1);
+            } else if (editorFSM.context.currentLayer < draggedLayer && editorFSM.context.currentLayer >= targetIndex) {
+                editorFSM.send('selectLayer', editorFSM.context.currentLayer + 1);
             }
         }
         draggedLayer = null;
@@ -67,10 +67,10 @@
     }
 
     // Check if all layers are visible
-    let areAllLayersVisible = $derived(editorStore.layerVisibility.every(v => v));
+    let areAllLayersVisible = $derived(editorFSM.context.layerVisibility.every(v => v));
 </script>
 
-<Dialog title="Layer Manager" show={editorStore.showLayerDialog} onClose={closeDialog}>
+<Dialog title="Layer Manager" onClose={closeDialog}>
     {#snippet buttonArea()}
         <button class="close-button" onclick={closeDialog}>Close</button>
     {/snippet}
@@ -79,19 +79,19 @@
         <div class="layer-header">
             <button 
                 class="show-all-button"
-                onclick={() => areAllLayersVisible ? editorStore.disableAllLayers() : editorStore.enableAllLayers()}
+                onclick={() => areAllLayersVisible ? editorFSM.send('disableAllLayers') : editorFSM.send('enableAllLayers')}
                 title={areAllLayersVisible ? 'Disable all layers' : 'Enable all layers'}
             >
                 {areAllLayersVisible ? 'Disable All Layers' : 'Enable All Layers'}
             </button>
         </div>
 
-        {#each Array(editorStore.MAX_LAYERS) as _, i}
-            {@const layerIndex = editorStore.MAX_LAYERS - 1 - i}
+        {#each Array(editorFSM.context.MAX_LAYERS) as _, i}
+            {@const layerIndex = editorFSM.context.MAX_LAYERS - 1 - i}
             <div 
                 role="listitem"
                 class="layer-item" 
-                class:active={editorStore.currentLayer === layerIndex}
+                class:active={editorFSM.context.currentLayer === layerIndex}
                 class:dragging={draggedLayer === layerIndex}
                 ondragover={(e) => e.preventDefault()}
                 ondrop={(e) => handleDrop(e, layerIndex)}
@@ -111,11 +111,11 @@
                     <span class="layer-number">{layerIndex + 1}</span>
                     <button 
                         class="visibility-toggle"
-                        class:active={editorStore.layerVisibility[layerIndex]}
-                        onclick={() => editorStore.toggleLayerVisibility(layerIndex)}
-                        title={editorStore.layerVisibility[layerIndex] ? 'Disable layer' : 'Enable layer'}
+                        class:active={editorFSM.context.layerVisibility[layerIndex]}
+                        onclick={() => editorFSM.send('toggleLayerVisibility', layerIndex)}
+                        title={editorFSM.context.layerVisibility[layerIndex] ? 'Disable layer' : 'Enable layer'}
                     >
-                        {editorStore.layerVisibility[layerIndex] ? 'Enabled' : 'Disabled'}
+                        {editorFSM.context.layerVisibility[layerIndex] ? 'Enabled' : 'Disabled'}
                     </button>
                     <input 
                         type="text"
@@ -123,7 +123,7 @@
                         value={layerNames[layerIndex]}
                         onchange={(e) => handleLayerNameChange(layerIndex, (e.target as HTMLInputElement).value)}
                         title={`Layer ${layerIndex + 1} (press ${layerIndex === 9 ? '0' : layerIndex + 1})`}
-                        disabled={!editorStore.layerVisibility[layerIndex]}
+                        disabled={!editorFSM.context.layerVisibility[layerIndex]}
                     />
                 </div>
             </div>

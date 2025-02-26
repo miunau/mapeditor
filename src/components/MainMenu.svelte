@@ -1,5 +1,12 @@
 <script lang="ts">
-    import { editorStore } from '../lib/state/EditorStore.svelte';
+    import { addDialog } from './dialogs/diag.svelte.js';
+    import NewMapDialog from './dialogs/NewMapDialog.svelte';
+    import ImportDialog from './dialogs/ImportDialog.svelte';
+    import ExportDialog from './dialogs/ExportDialog.svelte';
+    import TilemapSettingsDialog from './dialogs/TilemapSettingsDialog.svelte';
+    import RenderSettingsDialog from './dialogs/RenderSettingsDialog.svelte';
+    import ResizeDialog from './dialogs/ResizeDialog.svelte';
+    import HelpDialog from './dialogs/HelpDialog.svelte';
 
     let activeMenu: string | null = $state(null);
 
@@ -15,25 +22,25 @@
         activeMenu = null;
         switch (action) {
             case 'new':
-                editorStore.setShowNewMapDialog(true);
+                addDialog("new-map", NewMapDialog);
                 break;
             case 'load':
-                editorStore.setShowImportDialog(true);
+                addDialog("import", ImportDialog);
                 break;
             case 'save':
-                editorStore.setShowExportDialog(true);
+                addDialog("export", ExportDialog);
                 break;
             case 'resize':
-                editorStore.setShowResizeDialog(true);
+                addDialog("resize-map", ResizeDialog);
                 break;
-            case 'settings':
-                editorStore.setShowTilemapDialog(true);
+            case 'tilemap-settings':
+                addDialog("tilemap-settings", TilemapSettingsDialog);
                 break;
-            case 'about':
-                editorStore.setShowShortcuts(true);
+            case 'help':
+                addDialog("help", HelpDialog);
                 break;
-            case 'renderSettings':
-                editorStore.setShowSettingsDialog(true);
+            case 'render-settings':
+                addDialog("render-settings", RenderSettingsDialog);
                 break;
         }
     }
@@ -79,8 +86,8 @@
             {#if activeMenu === 'edit'}
                 <div class="menu-dropdown">
                     <button class="button-none menu-option" onclick={() => handleMenuAction('resize')}>Resize Map...</button>
-                    <button class="button-none menu-option" onclick={() => handleMenuAction('settings')}>Tilemap Settings...</button>
-                    <button class="button-none menu-option" onclick={() => handleMenuAction('renderSettings')}>Render Settings...</button>
+                    <button class="button-none menu-option" onclick={() => handleMenuAction('tilemap-settings')}>Tilemap Settings...</button>
+                    <button class="button-none menu-option" onclick={() => handleMenuAction('render-settings')}>Render Settings...</button>
                 </div>
             {/if}
         </li>
@@ -95,7 +102,7 @@
             </button>
             {#if activeMenu === 'help'}
                 <div class="menu-dropdown">
-                    <button class="button-none menu-option" onclick={() => handleMenuAction('about')}>On-Line Help</button>
+                    <button class="button-none menu-option" onclick={() => handleMenuAction('help')}>On-Line Help</button>
                 </div>
             {/if}
         </li>

@@ -1,44 +1,50 @@
-import type { MapData, MapMetadata } from './map';
+import type { MapData, MapMetadata, MapDimensions, UncompressedMapData } from '$lib/managers/MapDataManager';
 
 // Pack map data into a binary format
-export function packMapData(mapData: MapData): string {
-    // Convert numbers to a more compact format
-    const packLayers = mapData.map(layer => {
+export function packMapData(mapData: MapData, dimensions: MapDimensions): string {
+    const { width, height, layers } = dimensions;
+    
+    // Convert flat Int32Array to run-length encoding for compression
+    const packLayers: number[][] = [];
+    
+    // Process each layer
+    for (let layer = 0; layer < layers; layer++) {
         const packed: number[] = [];
+        const layerOffset = layer * width * height;
+        
+        // Start with the first value
         let currentRun = {
-            value: layer[0][0],
+            value: mapData[layerOffset],
             count: 1
         };
-
-        // Flatten the 2D layer and count runs
-        for (let y = 0; y < layer.length; y++) {
-            for (let x = 0; x < layer[y].length; x++) {
-                // Skip the first cell since we already counted it
-                if (y === 0 && x === 0) continue;
-                
-                const value = layer[y][x];
-                if (value === currentRun.value && currentRun.count < 255) {
-                    currentRun.count++;
-                } else {
-                    // Store runs as [count, value]
-                    packed.push(currentRun.count, currentRun.value);
-                    currentRun = { value, count: 1 };
-                }
+        
+        // Process the rest of the layer
+        for (let i = 1; i < width * height; i++) {
+            const value = mapData[layerOffset + i];
+            
+            if (value === currentRun.value && currentRun.count < 255) {
+                currentRun.count++;
+            } else {
+                // Store runs as [count, value]
+                packed.push(currentRun.count, currentRun.value);
+                currentRun = { value, count: 1 };
             }
         }
+        
         // Push the last run
         packed.push(currentRun.count, currentRun.value);
-        return packed;
-    });
+        packLayers.push(packed);
+    }
 
     // Convert to binary format
-    const headerSize = 4; // 2 bytes each for width and height
+    const headerSize = 6; // 2 bytes each for width, height, and layers
     const totalSize = headerSize + packLayers.reduce((sum, layer) => sum + layer.length, 0);
     const buffer = new Int16Array(totalSize);
 
-    // Write header (width and height)
-    buffer[0] = mapData[0][0].length;  // width
-    buffer[1] = mapData[0].length;     // height
+    // Write header (width, height, and layers)
+    buffer[0] = width;
+    buffer[1] = height;
+    buffer[2] = layers;
 
     // Write layer data
     let offset = headerSize;
@@ -54,7 +60,7 @@ export function packMapData(mapData: MapData): string {
 }
 
 // Unpack binary map data
-export function unpackMapData(base64Data: string): MapData {
+export function unpackMapData(base64Data: string): { mapData: MapData; dimensions: MapDimensions } {
     try {
         // Convert from base64 to binary
         const binaryString = atob(base64Data);
@@ -67,82 +73,69 @@ export function unpackMapData(base64Data: string): MapData {
         // Read header
         const width = data[0];
         const height = data[1];
-        const headerSize = 4;
+        const layers = data[2];
+        const headerSize = 6;
 
-        if (width <= 0 || height <= 0 || width > 1000 || height > 1000) {
+        if (width <= 0 || height <= 0 || layers <= 0 || width > 1000 || height > 1000 || layers > 10) {
             throw new Error('Invalid map dimensions');
         }
 
-        // Read layer data
-        const layers: MapData = [];
+        // Create the MapData Int32Array
+        const totalSize = width * height * layers;
+        const mapData = new Int32Array(totalSize);
+        mapData.fill(-1); // Initialize with empty tiles
+        
         let offset = headerSize;
-
-        while (offset < data.length - 1) {  // Need at least 2 more values for a run
-            // Start a new layer
-            const layer: number[][] = Array(height).fill(null).map(() => Array(width).fill(-1));
-            let x = 0, y = 0;
-            let cellsInLayer = 0;
-            const totalCells = width * height;
-
+        
+        // Process each layer
+        for (let layer = 0; layer < layers; layer++) {
+            let index = layer * width * height;
+            
             // Read runs until layer is full
-            while (cellsInLayer < totalCells && offset < data.length - 1) {
+            while (index < (layer + 1) * width * height && offset < data.length - 1) {
                 const count = data[offset++];
                 const value = data[offset++];
 
                 if (count <= 0) continue;  // Skip invalid runs
 
                 // Process this run
-                for (let i = 0; i < count; i++) {
-                    layer[y][x] = value;
-                    x++;
-                    if (x >= width) {
-                        x = 0;
-                        y++;
-                    }
-                    cellsInLayer++;
+                for (let i = 0; i < count && index < (layer + 1) * width * height; i++) {
+                    mapData[index++] = value;
                 }
             }
-
-            layers.push(layer);
-
-            // If we've read all the data, break
-            if (offset >= data.length - 1) break;
         }
 
-        return layers;
+        return {
+            mapData,
+            dimensions: { width, height, layers }
+        };
     } catch (error) {
         console.error('Error unpacking map data:', error);
         // Return a minimal valid map on error
-        return [Array(10).fill(null).map(() => Array(10).fill(-1))];
+        const width = 10;
+        const height = 10;
+        const layers = 1;
+        const mapData = new Int32Array(width * height * layers);
+        mapData.fill(-1);
+        
+        return {
+            mapData,
+            dimensions: { width, height, layers }
+        };
     }
 }
 
 // Create map metadata for export
 export function createMapMetadata(
     mapData: MapData,
+    dimensions: MapDimensions,
     tilemapSettings: any,
     customBrushes: any[] | undefined,
-    useCompression: boolean
 ): MapMetadata {
-    if (useCompression) {
-        return {
-            version: 1,
-            format: 'binary',
-            mapData: packMapData(mapData),
-            tilemap: tilemapSettings,
-            customBrushes
-        };
-    } else {
-        return {
-            version: 1,
-            format: 'json',
-            mapData: {
-                width: mapData[0][0].length,
-                height: mapData[0].length,
-                layers: mapData
-            },
-            tilemap: tilemapSettings,
-            customBrushes
-        };
-    }
+    return {
+        version: 1,
+        mapData: packMapData(mapData, dimensions),
+        tilemap: tilemapSettings,
+        customBrushes
+    };
 } 

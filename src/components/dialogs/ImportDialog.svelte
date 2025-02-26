@@ -1,16 +1,16 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
+    import { removeDialog } from './diag.svelte.js';
     import Dialog from './Dialog.svelte';
-
+    import { editorFSM } from '$lib/state/EditorStore.svelte.js';
     let mapData = $state('');
 
     function importMap() {
-        if (mapData && editorStore.editor) {
+        if (mapData) {
             try {
                 const data = JSON.parse(mapData);
                 // Check for version and required fields
                 if (typeof data === 'object' && data.version === 1 && data.mapData && data.tilemap) {
-                    editorStore.editor.importMap(data);
+                    editorFSM.send('importMap', data);
                     closeDialog();
                 } else {
                     throw new Error('Incompatible map data version');
@@ -23,7 +23,7 @@
     }
 
     function closeDialog() {
-        editorStore.setShowImportDialog(false);
+        removeDialog("import");
         mapData = '';  // Clear textarea when closing
     }
 
@@ -43,7 +43,7 @@
     }
 </script>
 
-<Dialog title="Import Map" show={editorStore.showImportDialog} onClose={closeDialog}>
+<Dialog title="Import Map" onClose={closeDialog}>
     {#snippet buttonArea()}
         <button onclick={importMap}>Import</button>
         <button onclick={closeDialog}>Cancel</button>

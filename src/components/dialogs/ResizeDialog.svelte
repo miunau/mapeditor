@@ -1,8 +1,10 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
-    import type { ResizeAlignment } from '../../lib/types/map.js';
+    import type { ResizeAlignment } from '$lib/utils/map.js';
+    import { editorFSM } from '$lib/state/EditorStore.svelte.js';
     import Dialog from './Dialog.svelte';
-
+    import { removeDialog } from './diag.svelte.js';
+    import { onMount } from 'svelte';
+    
     let width = $state(20);
     let height = $state(15);
     let selectedAlignment = $state<ResizeAlignment>('middle-center');
@@ -13,27 +15,24 @@
         'bottom-left', 'bottom-center', 'bottom-right'
     ] as const;
 
-    $effect(() => {
-        if (editorStore.showResizeDialog && editorStore.editor) {
-            const dims = editorStore.editor.getMapDimensions();
-            width = dims.width;
-            height = dims.height;
-        }
+    onMount(() => {
+        width = editorFSM.context.mapWidth;
+        height = editorFSM.context.mapHeight;
     });
 
     function resizeMap() {
-        if (width > 0 && height > 0 && editorStore.editor) {
-            editorStore.editor.resizeMap(width, height, selectedAlignment);
+        if (width > 0 && height > 0) {
+            editorFSM.send('resizeMap', { width, height, alignment: selectedAlignment });
             closeDialog();
         }
     }
 
     function closeDialog() {
-        editorStore.setShowResizeDialog(false);
+        removeDialog("resize-map");
     }
 </script>
 
-<Dialog title="Resize Map" show={editorStore.showResizeDialog} onClose={closeDialog}>
+<Dialog title="Resize Map" onClose={closeDialog}>
     {#snippet buttonArea()}
         <button onclick={resizeMap}>Resize</button>
         <button onclick={closeDialog}>Cancel</button>

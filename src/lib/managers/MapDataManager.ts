@@ -1,10 +1,63 @@
+import type { CustomBrush } from '$lib/utils/drawing';
+import type { TilemapSettings } from '$lib/utils/settings';
+import type { Tilemap } from '../utils/tilemap';
+
 /**
- * SharedMapData.ts - Manages map data using SharedArrayBuffer for efficient worker communication
+ * Represents the complete map data as an Int32Array, which is a flat array of tile indices.
+ * - The array is a flat representation of a 2D grid, with indices calculated as (y * width + x).
+ * - A value of -1 typically indicates an empty/transparent tile.
  */
+export type MapData = Int32Array;
 
-import type { MapData, MapDimensions } from './utils/map';
+/**
+ * Describes the dimensions of a map.
+ */
+export interface MapDimensions {
+    /** Width of the map in tiles */
+    width: number;
+    /** Height of the map in tiles */
+    height: number;
+    /** Number of layers in the map */
+    layers: number;
+}
 
-export class SharedMapData {
+/**
+ * Possible alignment options when resizing a map.
+ * Determines how the existing map content is positioned within the new dimensions.
+ */
+export const ALIGNMENTS = ['top-left', 'top-center', 'top-right',
+                   'middle-left', 'middle-center', 'middle-right',
+                   'bottom-left', 'bottom-center', 'bottom-right'] as const;
+export type ResizeAlignment = typeof ALIGNMENTS[number];
+
+/**
+ * Uncompressed map data structure with dimensions and layer data.
+ */
+export interface UncompressedMapData {
+    /** Width of the map in tiles */
+    width: number;
+    /** Height of the map in tiles */
+    height: number;
+    /** Array of layer data */
+    layers: MapData;
+}
+
+/**
+ * Complete metadata for a map, including the map data and tileset information.
+ */
+export interface MapMetadata {
+    /** Version number of the map format */
+    version: number;
+    /** The actual map data, either as an object or as a binary string */
+    mapData: UncompressedMapData | string; // string for binary format
+    /** Settings for the tileset used by this map */
+    tilemap: TilemapSettings;
+    /** Optional array of custom brushes saved with this map */
+    customBrushes?: CustomBrush[];
+}
+
+
+export class MapDataManager {
     // The shared buffer that contains all map data
     private sharedBuffer: SharedArrayBuffer;
     
@@ -31,12 +84,12 @@ export class SharedMapData {
      * @param tileWidth Tile width in pixels
      * @param tileHeight Tile height in pixels
      */
-    constructor(width: number, height: number, layers: number, initialData?: MapData, tileWidth: number = 16, tileHeight: number = 16) {
+    constructor(width: number, height: number, layers: number, tilemap: Tilemap) {
         this.width = width;
         this.height = height;
         this.layers = layers;
-        this.tileWidth = tileWidth;
-        this.tileHeight = tileHeight;
+        this.tileWidth = tilemap.tileWidth;
+        this.tileHeight = tilemap.tileHeight;
         
         // Calculate total size needed for the tile buffer
         const totalSize = width * height * layers;
@@ -45,10 +98,9 @@ export class SharedMapData {
             width,
             height,
             layers,
-            tileWidth,
-            tileHeight,
+            tileWidth: this.tileWidth,
+            tileHeight: this.tileHeight,
             totalSize,
-            hasInitialData: !!initialData
         });
         
         // Create the shared tile buffer
@@ -65,44 +117,10 @@ export class SharedMapData {
         this.updateFlagsView = new Int32Array(this.updateFlags);
         this.updateFlagsView.fill(0);
         
-        // If initial data is provided, copy it to the buffer
-        if (initialData) {
-            this.initializeFromMapData(initialData);
-        }
     }
-    
-    // Initialize from map data
-    private initializeFromMapData(mapData: MapData) {
-        // Validate dimensions
-        if (mapData.length !== this.layers) {
-            console.warn(`SharedMapData: Initial data has ${mapData.length} layers, but buffer has ${this.layers} layers`);
-        }
-        
-        const layerCount = Math.min(mapData.length, this.layers);
-        
-        for (let layer = 0; layer < layerCount; layer++) {
-            if (mapData[layer].length !== this.height) {
-                console.warn(`SharedMapData: Layer ${layer} has ${mapData[layer].length} rows, but buffer has ${this.height} rows`);
-                continue;
-            }
-            
-            for (let y = 0; y < this.height; y++) {
-                if (mapData[layer][y].length !== this.width) {
-                    console.warn(`SharedMapData: Layer ${layer}, row ${y} has ${mapData[layer][y].length} columns, but buffer has ${this.width} columns`);
-                    continue;
-                }
-                
-                for (let x = 0; x < this.width; x++) {
-                    const index = this.getFlatIndex(layer, y, x);
-                    this.dataView[index] = mapData[layer][y][x];
-                }
-            }
-        }
-        
-        // Mark all layers as needing update
-        for (let i = 0; i < this.layers; i++) {
-            this.updateFlagsView[i] = 1;
-        }
+
+    createEmptyMapData(): Int32Array {
+        return new Int32Array(this.width * this.height * this.layers);
     }
     
     // Get the tile buffer
@@ -235,26 +253,10 @@ export class SharedMapData {
     }
     
     // Convert the shared buffer to a regular MapData array
-    toMapData(): MapData {
-        const mapData: MapData = [];
-        
-        for (let layer = 0; layer < this.layers; layer++) {
-            const layerData: number[][] = [];
-            
-            for (let y = 0; y < this.height; y++) {
-                const row: number[] = [];
-                
-                for (let x = 0; x < this.width; x++) {
-                    const index = this.getFlatIndex(layer, y, x);
-                    row.push(this.dataView[index]);
-                }
-                
-                layerData.push(row);
-            }
-            
-            mapData.push(layerData);
-        }
-        
+    cloneMapData(): MapData {
+        const mapData = new Int32Array(this.width * this.height * this.layers);
+        // Copy the dataView to the new mapData
+        mapData.set(this.dataView);
         return mapData;
     }
 } 

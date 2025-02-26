@@ -12,3 +12,21 @@ export interface RenderSettings {
     showFPS: boolean;
     debugMode: boolean;
 }
+
+// Default settings
+export const defaultRenderSettings: RenderSettings = {
+    useLOD: true,
+    lodThreshold: 0.4,
+    lodQuality: 3,
+    batchSize: 16,
+    useDirectAtlas: true,
+    showFPS: true,
+    debugMode: false
+};
+
+export interface TilemapSettings {
+    imageUrl: string;
+    tileWidth: number;
+    tileHeight: number;
+    spacing: number;
+}

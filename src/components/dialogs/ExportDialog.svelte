@@ -1,25 +1,46 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
-  import IconButton from '../IconButton.svelte';
-  import IconCopy from '../icons/IconCopy.svelte';
-  import IconExport from '../icons/IconExport.svelte';
-  import IconSave from '../icons/IconSave.svelte';
+    import { editorFSM } from '$lib/state/EditorStore.svelte.js';
+    import { createMapMetadata } from '$lib/utils/serialization';
+    import { onMount } from 'svelte';
+    import IconButton from '../IconButton.svelte';
+    import IconCopy from '../icons/IconCopy.svelte';
+    import IconExport from '../icons/IconExport.svelte';
+    import IconSave from '../icons/IconSave.svelte';
     import Dialog from './Dialog.svelte';
-
+    import { removeDialog } from './diag.svelte.js';
     let activeTab = $state<'export' | 'docs'>('export');
-    let useCompression = $state(true);
     let includeCustomBrushes = $state(true);
     let exportedData = $state('');
 
-    $effect(() => {
-        if (editorStore.showExportDialog && editorStore.editor) {
-            exportMap();
-        }
+    onMount(() => {
+        // Generate export data when the dialog is opened
+        exportMap();
     });
 
     function exportMap() {
-        if (!editorStore.editor) return;
-        exportedData = editorStore.editor.exportMap(useCompression, includeCustomBrushes);
+        if (!editorFSM.context.mapDataManager || !editorFSM.context.brushManager) {
+            console.error('Map data manager or brush manager not initialized');
+            return;
+        }
+        
+        const mapData = editorFSM.context.mapDataManager.cloneMapData();
+        const dimensions = editorFSM.context.mapDataManager.getDimensions();
+        const tilemapSettings = editorFSM.context.tilemap?.getSettings();
+        const customBrushes = includeCustomBrushes ? editorFSM.context.brushManager.getCustomBrushes() : undefined;
+        
+        if (!tilemapSettings) {
+            console.error('Tilemap settings not available');
+            return;
+        }
+        
+        const metadata = createMapMetadata(
+            mapData,
+            dimensions,
+            tilemapSettings,
+            customBrushes,
+        );
+        
+        exportedData = JSON.stringify(metadata, null, 2);
     }
 
     function downloadJson() {
@@ -35,7 +56,7 @@
     }
 
     function closeDialog() {
-        editorStore.setShowExportDialog(false);
+        removeDialog("export");
         exportedData = '';
     }
 
@@ -50,7 +71,7 @@
     }
 </script>
 
-<Dialog title="Export Map" show={editorStore.showExportDialog} onClose={closeDialog}>
+<Dialog title="Export Map" onClose={closeDialog}>
     {#snippet buttonArea()}
         <button onclick={closeDialog}>
             Close
@@ -72,20 +93,6 @@
                 {#if activeTab === 'export'}
                     <div class="export-options">
                         <p><strong>Export Options</strong></p>
-                        <input 
-                            type="checkbox" 
-                            bind:checked={useCompression}
-                            onchange={exportMap}
-                            id="use-compression"
-                        >
-                        <label for="use-compression" class="checkbox-label">
-                            Use compression
-                            <span class="help-text">
-                                {useCompression ? 
-                                    '(Binary format, smaller file size)' : 
-                                    '(JSON format, human readable)'}
-                            </span>
-                        </label>
                         <input 
                             type="checkbox" 
                             bind:checked={includeCustomBrushes}
@@ -119,15 +126,16 @@
                 {:else}
                     <div class="documentation">
                         <h4>Map Data Format</h4>
-                        <p>The map data can be stored in two formats:</p>
+                        <p>The map data is stored in a compressed binary format, encoded as base64.</p>
 
                         <h5>Compressed Format (Binary)</h5>
-                        <p>A compressed binary format, encoded as base64, structured as follows:</p>
+                        <p>The binary format is structured as follows:</p>
                         <ul>
-                            <li>Header (4 bytes):
+                            <li>Header (6 bytes):
                                 <ul>
                                     <li>Width (2 bytes): Map width in tiles</li>
                                     <li>Height (2 bytes): Map height in tiles</li>
+                                    <li>Layers (2 bytes): Number of layers in the map</li>
                                 </ul>
                             </li>
                             <li>Layer Data (series of runs):
@@ -138,16 +146,119 @@
                             </li>
                         </ul>
 
-                        <h5>Uncompressed Format (JSON)</h5>
-                        <p>A standard JSON format with the following structure:</p>
+                        <h5>How to Unpack Binary Data</h5>
+                        <p>To decode and use the binary format in your application:</p>
+                        <pre><code>{`// JavaScript example to decode binary map data
+function unpackMapData(base64Data) {
+    // Convert from base64 to binary
+    const binaryString = atob(base64Data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    const data = new Int16Array(bytes.buffer);
+
+    // Read header
+    const width = data[0];
+    const height = data[1];
+    const layers = data[2];
+    const headerSize = 6;
+
+    // Create the map data array
+    const mapData = new Int32Array(width * height * layers);
+    mapData.fill(-1); // Initialize with empty tiles
+    
+    let offset = headerSize;
+    
+    // Process each layer
+    for (let layer = 0; layer < layers; layer++) {
+        let index = layer * width * height;
+        
+        // Read runs until layer is full
+        while (index < (layer + 1) * width * height && offset < data.length - 1) {
+            const count = data[offset++];
+            const value = data[offset++];
+
+            if (count <= 0) continue;  // Skip invalid runs
+
+            // Process this run
+            for (let i = 0; i < count && index < (layer + 1) * width * height; i++) {
+                mapData[index++] = value;
+            }
+        }
+    }
+
+    return {
+        mapData,
+        dimensions: { width, height, layers }
+    };
+}`}</code></pre>
+
+                        <h5>Accessing Tile Data</h5>
+                        <p>To access a specific tile in the unpacked data:</p>
+                        <pre><code>{`// Get a tile at specific coordinates
+function getTile(mapData, dimensions, layer, x, y) {
+    const { width, height } = dimensions;
+    const index = (layer * width * height) + (y * width) + x;
+    return mapData[index];
+}
+
+// Example usage
+const { mapData, dimensions } = unpackMapData(base64Data);
+const tileValue = getTile(mapData, dimensions, 0, 10, 5); // Layer 0, x=10, y=5`}</code></pre>
+
+                        <h5>Rendering the Map</h5>
+                        <p>Basic example of rendering the map with a canvas:</p>
+                        <pre><code>{`// Render map to canvas
+function renderMap(mapData, dimensions, tileset, canvas) {
+    const { width, height, layers } = dimensions;
+    const ctx = canvas.getContext('2d');
+    const tileWidth = tileset.tileWidth;
+    const tileHeight = tileset.tileHeight;
+    
+    // Set canvas size
+    canvas.width = width * tileWidth;
+    canvas.height = height * tileHeight;
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Create tileset image
+    const tilesetImg = new Image();
+    tilesetImg.onload = () => {
+        // For each layer (back to front)
+        for (let layer = 0; layer < layers; layer++) {
+            // For each tile position
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const tileIndex = getTile(mapData, dimensions, layer, x, y);
+                    
+                    // Skip empty tiles
+                    if (tileIndex === -1) continue;
+                    
+                    // Calculate tileset position
+                    const tilesPerRow = Math.floor(tilesetImg.width / tileWidth);
+                    const tilesetX = (tileIndex % tilesPerRow) * tileWidth;
+                    const tilesetY = Math.floor(tileIndex / tilesPerRow) * tileHeight;
+                    
+                    // Draw the tile
+                    ctx.drawImage(
+                        tilesetImg,
+                        tilesetX, tilesetY, tileWidth, tileHeight,
+                        x * tileWidth, y * tileHeight, tileWidth, tileHeight
+                    );
+                }
+            }
+        }
+    };
+    tilesetImg.src = tileset.imageData; // Base64 PNG from the export
+}`}</code></pre>
+
+                        <h5>JSON Structure</h5>
+                        <p>The complete exported JSON structure:</p>
                         <pre><code>{`{
     "version": 1,
-    "format": "json",
-    "mapData": {
-        "width": number,
-        "height": number,
-        "layers": number[][][]  // [layer][row][column]
-    },
+    "mapData": string,  // Base64 encoded binary data
     "tilemap": {
         "imageData": string,  // Base64 PNG
         "tileWidth": number,
@@ -163,6 +274,27 @@
             "height": number
         }
     ]
+}`}</code></pre>
+
+                        <h5>Complete Example</h5>
+                        <p>Here's a complete example of loading and rendering a map:</p>
+                        <pre><code>{`// Load and render a map from exported JSON
+function loadMap(jsonData, canvasElement) {
+    // Parse the JSON data
+    const mapData = JSON.parse(jsonData);
+    
+    // Unpack the binary map data
+    const { mapData: tileData, dimensions } = unpackMapData(mapData.mapData);
+    
+    // Render the map
+    renderMap(tileData, dimensions, mapData.tilemap, canvasElement);
+    
+    return {
+        tileData,
+        dimensions,
+        tilemap: mapData.tilemap,
+        customBrushes: mapData.customBrushes
+    };
 }`}</code></pre>
                     </div>
                 {/if}

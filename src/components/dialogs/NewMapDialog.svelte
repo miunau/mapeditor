@@ -1,31 +1,30 @@
 <script lang="ts">
-    import { editorStore } from '../../lib/state/EditorStore.svelte.js';
+    import { editorFSM } from '$lib/state/EditorStore.svelte.js';
     import Dialog from './Dialog.svelte';
+    import { removeDialog } from './diag.svelte.js';
+    import { onMount } from 'svelte';
 
     let width = $state(20);
     let height = $state(15);
 
-    $effect(() => {
-        if (editorStore.showNewMapDialog && editorStore.editor) {
-            const dims = editorStore.editor.getMapDimensions();
-            width = dims.width;
-            height = dims.height;
-        }
+    onMount(() => {
+        width = editorFSM.context.mapWidth;
+        height = editorFSM.context.mapHeight;
     });
 
     function createNewMap() {
-        if (width > 0 && height > 0 && editorStore.editor) {
-            editorStore.editor.newMap(width, height);
+        if (width > 0 && height > 0) {
+            editorFSM.send('newMap', { width, height });
             closeDialog();
         }
     }
 
     function closeDialog() {
-        editorStore.setShowNewMapDialog(false);
+        removeDialog("new-map");
     }
 </script>
 
-<Dialog title="New Map" show={editorStore.showNewMapDialog} onClose={closeDialog}>
+<Dialog title="New Map" onClose={closeDialog}>
     {#snippet buttonArea()}
         <button onclick={createNewMap}>Create</button>
         <button onclick={closeDialog}>Cancel</button>

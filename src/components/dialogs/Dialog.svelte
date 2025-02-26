@@ -2,13 +2,11 @@
     import type { Snippet } from "svelte";
     let {
         title,
-        show,
         onClose,
         children,
         buttonArea,
     }: {
         title: string,
-        show: boolean,
         onClose: () => void,
         children: Snippet,
         buttonArea?: Snippet,
@@ -49,7 +47,7 @@
 
     // Center the dialog when it becomes visible
     $effect(() => {
-        if (show && dialogElement) {
+        if (dialogElement) {
             const viewportWidth = window.innerWidth;
             const viewportHeight = window.innerHeight;
             const dialogWidth = dialogElement.offsetWidth;
@@ -70,7 +68,6 @@
 
 <div 
     class="dialog" 
-    class:show={show}
     style="left: {position.x}px; top: {position.y}px;"
     bind:this={dialogElement}
 >
@@ -107,7 +104,7 @@
     }
     
     .dialog {
-        display: none;
+        display: block;
         position: fixed;
         z-index: 1000;
         user-select: none;
@@ -116,10 +113,6 @@
         min-width: 200px;
         min-height: 100px;
         max-height: calc(100vh - 20px);
-    }
-
-    .dialog.show {
-        display: block;
     }
 
     .title-bar {

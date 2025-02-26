@@ -1,3 +1,5 @@
+import type { TilemapSettings } from './settings.js';
+
 export class Tilemap {
     imageUrl: string;
     // The number of pixels between each tile
@@ -15,7 +17,7 @@ export class Tilemap {
     // Loading promise
     private loadingPromise: Promise<void> | null = null;
 
-    constructor(imageUrl: string, tileWidth: number, tileHeight: number, spacing: number = 1) {
+    constructor(imageUrl: string, tileWidth: number, tileHeight: number, spacing: number = 0) {
         this.imageUrl = imageUrl;
         this.tileWidth = tileWidth;
         this.tileHeight = tileHeight;
@@ -49,6 +51,14 @@ export class Tilemap {
         return this.loadingPromise;
     }
 
+    getSettings(): TilemapSettings {
+        return {
+            imageUrl: this.imageUrl,
+            tileWidth: this.tileWidth,
+            tileHeight: this.tileHeight,
+            spacing: this.spacing
+        };
+    }
     private sliceTiles(): void {
         if (!this.image) {
             throw new Error('Image not loaded');
