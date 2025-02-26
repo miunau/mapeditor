@@ -7,7 +7,8 @@ import { createWorker } from '$lib/workers/createWorker';
 import { BrushManager } from '$lib/managers/BrushManager';
 import { PaletteManager } from '$lib/managers/PaletteManager';
 import { MapDataManager, type MapData } from '$lib/managers/MapDataManager';
-import { OptimizedRenderer } from '$lib/renderer/OptimizedRenderer';
+import { Renderer } from '$lib/renderer/Renderer.svelte.js';
+import { HIDManager } from '$lib/managers/HIDManager';
 
 export const MAX_LAYERS = 10;
 
@@ -18,7 +19,7 @@ export type EditorContext = {
     worker: Worker | null;
     /* The HTML canvas element that will be transferred to the worker */
     canvas: HTMLCanvasElement | null;
-    renderer: OptimizedRenderer | null;
+    renderer: Renderer | null;
     /* Tilemap and brush palette canvas */
     paletteCanvas: HTMLCanvasElement | null;
     paletteCtx: CanvasRenderingContext2D | null;
@@ -26,6 +27,10 @@ export type EditorContext = {
     container: HTMLElement | null;
     /* Shared memory for map data */
     mapDataManager: MapDataManager | null;
+    /* HID manager */
+    hidManager: HIDManager | null;
+    /* FPS */
+    fps: number;
     /* Width of the map in tiles */
     mapWidth: number;
     /* Height of the map in tiles */
@@ -41,20 +46,7 @@ export type EditorContext = {
     offsetY: number;
     /* Show grid */
     showGrid: boolean;
-    /* Is panning */
-    isPanning: boolean;
-    /* Last pan X */
-    lastPanX: number;
-    lastPanY: number;
-    isKeyboardPanning: boolean;
-    keyPanState: {
-        left: boolean;
-        right: boolean;
-        up: boolean;
-        down: boolean;
-    } | null;
-    panVelocityX: number;
-    panVelocityY: number;
+    
     undoStack: MapData[];
     redoStack: MapData[];
     maxUndoSteps: number;
@@ -101,39 +93,51 @@ export const editorFSM = new FSM(
         tilemap: null,
         worker: null,
         canvas: null,
+        renderer: null,
         paletteCanvas: null,
         paletteCtx: null,
         container: null,
         mapWidth: 32,
         mapHeight: 32,
         mapDataManager: null,
+        hidManager: null,
         updateFlags: null,
         updateFlagsBuffer: null,
+        fps: 0,
         zoomLevel: 1,
         offsetX: 0,
         offsetY: 0,
         showGrid: true,
-        isPanning: false,
-        lastPanX: 0,
-        lastPanY: 0,
-        isKeyboardPanning: false,
-        keyPanState: null,
-        panVelocityX: 0,
-        panVelocityY: 0,
+        undoStack: [],
+        redoStack: [],
+        maxUndoSteps: 20,
+
+        /* Reason for failure */
         failReason: undefined,
+
+        /* Tool state */
         currentTool: 'brush',
+        currentBrush: { type: 'tile', index: 0 },
+        brushManager: null,
+        paletteManager: null,
         brushSize: 1,
         drawStartX: null,
         drawStartY: null,
         isErasing: false,
-        currentBrush: { type: 'tile', index: 0 },
         isSelectingTiles: false,
         selectionStartX: null,
         selectionStartY: null,
         selectionEndX: null,
         selectionEndY: null,
-        renderSettings: { ...defaultRenderSettings },
+
+        /* Settings */
+        renderSettings: { 
+            ...defaultRenderSettings,
+            showGrid: true
+        },
         debugMode: true,
+        
+        /* Layer state */
         layerCount: MAX_LAYERS,
         currentLayer: 0,
         layerVisibility: Array(MAX_LAYERS).fill(true),
@@ -192,8 +196,6 @@ export const editorFSM = new FSM(
                     context.undoStack = [context.mapDataManager!.cloneMapData()];
                     context.redoStack = [];
 
-                    console.log('data.container', data.container);
-
                     const style = window.getComputedStyle(data.container);
                     const initialWidth = data.container.clientWidth 
                         - parseFloat(style.paddingLeft) 
@@ -210,8 +212,10 @@ export const editorFSM = new FSM(
                     context.paletteManager.createCanvas(initialWidth, initialHeight);
                     context.paletteManager.drawPalette();
 
-                    context.renderer = new OptimizedRenderer(context.canvas, context.renderSettings.debugMode);
-                    context.renderer.updateRenderSettings(context.renderSettings);
+                    // Make sure renderSettings.showGrid matches context.showGrid
+                    context.renderSettings.showGrid = context.showGrid;
+
+                    context.renderer = new Renderer(context.canvas, context.worker!, context.renderSettings.debugMode, machine);
                     await context.renderer.initialize(
                         context.mapWidth,
                         context.mapHeight,
@@ -224,7 +228,10 @@ export const editorFSM = new FSM(
                         initialHeight,
                         context.mapDataManager!
                     );
-                    return 'setupListeners' as const;
+                    context.renderer.updateRenderSettings(context.renderSettings);
+                    context.hidManager = new HIDManager(machine, context.canvas!, context.renderer!);
+                    
+                    return 'idle' as const;
                 },
                 'error': (context: EditorContext, data: { reason: string }, machine: FSM<EditorContext, any>) => {
                     context.failReason = data.reason;
@@ -237,24 +244,7 @@ export const editorFSM = new FSM(
                 return context;
             }
         },
-        setupListeners: {
-            enter: (context: EditorContext) => {
-                /*
-                context.canvas!.addEventListener('wheel', context.boundHandleWheel);
-                context.canvas!.addEventListener('mousedown', context.boundHandleMouseDown);
-                context.canvas!.addEventListener('mousemove', context.boundHandleMouseMove);
-                window.addEventListener('mouseup', context.boundHandleMouseUp);
-                window.addEventListener('keydown', context.boundHandleKeyDown);
-                window.addEventListener('keyup', context.boundHandleKeyUp);
-                window.addEventListener('resize', context.boundHandleResize);
-                */
-                return 'idle' as const;
-            }
-        },
         idle: {
-            enter: (context: EditorContext) => {
-                return context;
-            },
             on: {
                 // Tool events
                 'startDrawing': (context: EditorContext, data: { x: number, y: number, isErasing: boolean }) => {
@@ -262,6 +252,14 @@ export const editorFSM = new FSM(
                     context.drawStartY = data.y;
                     context.isErasing = data.isErasing;
                     return 'drawing' as const;
+                },
+                'keyDown': (context: EditorContext, data: { key: string }) => {
+                    // Handle non-arrow key events
+                    return 'idle' as const;
+                },
+                'keyUp': (context: EditorContext, data: { key: string }) => {
+                    console.log('keyup', data);
+                    return 'idle' as const;
                 },
                 'selectTool': (context: EditorContext, tool: ToolType) => {
                     context.currentTool = tool;
@@ -282,11 +280,29 @@ export const editorFSM = new FSM(
                     return 'idle' as const;
                 },
                 'toggleGrid': (context: EditorContext) => {
+                    // Update both the context showGrid flag and the renderSettings
                     context.showGrid = !context.showGrid;
+                    context.renderSettings.showGrid = context.showGrid;
+                    
+                    // Update the renderer with the new settings
+                    if (context.renderer) {
+                        context.renderer.updateRenderSettings(context.renderSettings);
+                    }
+                    
                     return 'idle' as const;
                 },
                 'setZoom': (context: EditorContext, zoom: number) => {
                     context.zoomLevel = zoom;
+                    
+                    // Update the renderer with the new zoom level
+                    if (context.renderer) {
+                        context.renderer.updateTransform(
+                            context.offsetX,
+                            context.offsetY,
+                            context.zoomLevel
+                        );
+                    }
+                    
                     return 'idle' as const;
                 },
                 // Layer events
@@ -349,8 +365,24 @@ export const editorFSM = new FSM(
                     context.drawStartY = null;
                     return 'idle' as const;
                 },
-                'continueShape': (context: EditorContext) => {
-                    // Continue the current shape drawing
+                'continueShape': (context: EditorContext, data: { x: number, y: number }) => {
+                    // Create the draw operation
+                    const drawOp = {
+                        type: context.currentTool,
+                        layer: context.currentLayer,
+                        startX: context.drawStartX!,
+                        startY: context.drawStartY!,
+                        endX: data.x,
+                        endY: data.y,
+                        tileIndex: context.currentBrush!.type === 'tile' ? context.currentBrush!.index : 0,
+                        isErasing: context.isErasing,
+                        brushSize: context.brushSize,
+                        customData: null
+                    };
+                    
+                    // Call the renderer directly
+                    context.renderer!.draw(drawOp);
+                    
                     return 'drawing' as const;
                 },
                 'setBrushSize': (context: EditorContext, size: number) => {
@@ -402,6 +434,32 @@ export const editorFSM = new FSM(
                 },
                 'setBrushSize': (context: EditorContext, size: number) => {
                     context.brushSize = Math.max(1, size);
+                    return 'allLayers' as const;
+                },
+                'toggleGrid': (context: EditorContext) => {
+                    // Update both the context showGrid flag and the renderSettings
+                    context.showGrid = !context.showGrid;
+                    context.renderSettings.showGrid = context.showGrid;
+                    
+                    // Update the renderer with the new settings
+                    if (context.renderer) {
+                        context.renderer.updateRenderSettings(context.renderSettings);
+                    }
+                    
+                    return 'allLayers' as const;
+                },
+                'setZoom': (context: EditorContext, zoom: number) => {
+                    context.zoomLevel = zoom;
+                    
+                    // Update the renderer with the new zoom level
+                    if (context.renderer) {
+                        context.renderer.updateTransform(
+                            context.offsetX,
+                            context.offsetY,
+                            context.zoomLevel
+                        );
+                    }
+                    
                     return 'allLayers' as const;
                 }
             }

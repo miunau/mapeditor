@@ -34,24 +34,27 @@ export async function createWorker(machine: FSM<EditorContext, any>, url: string
             reject(new Error(`Worker error: ${(e as any).message || 'Unknown error'}`));
         };
 
-        let initialized = false;
+        let loaded = false;
+
+        // Store the original onmessage handler if it exists
+        const originalOnMessage = worker.onmessage;
 
         // Handle messages from the worker
         worker.onmessage = (e: MessageEvent) => {
-            console.log('Worker message:', e);
-            
-            // Forward all messages to the state machine
-            if (initialized) {
-                machine.send('workerMessage', e);
+            if (loaded) {
+                if(e.data.type === 'fpsUpdate') {
+                    machine.context.fps = e.data.fps;
+                }
             }
             
             // Check if this is the initialization message
-            if (e.data && e.data.type === 'initialized') {
+            if (e.data && e.data.type === 'loaded') {
                 clearTimeout(timeoutId);
-                initialized = true;
+                loaded = true;
+                
+                // Don't overwrite the onmessage handler when resolving
                 resolve(worker);
             }
-            
         };
     });
 }

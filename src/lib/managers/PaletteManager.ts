@@ -1,4 +1,3 @@
-
 import type { BrushManager } from './BrushManager';
 import type { Brush } from '../utils/drawing';
 import type { Tilemap } from '../utils/tilemap';
@@ -24,14 +23,27 @@ export class PaletteManager {
     }
 
     createCanvas(width: number, height: number) {
-        editorFSM.context.paletteCanvas!.style.position = 'absolute';
-        editorFSM.context.paletteCanvas!.style.left = '0px';  // Position it on the left
-        editorFSM.context.paletteCanvas!.style.top = '0px';   // with a small margin from the top
-        editorFSM.context.paletteCanvas!.style.zIndex = '20';  // Make sure it's above everything else
+        // Calculate the actual size needed for the palette
+        const paletteArea = this.getPaletteArea();
         
-        // Set initial size - we'll adjust this based on content later
-        editorFSM.context.paletteCanvas!.width = width;  // Default width
-        editorFSM.context.paletteCanvas!.height = height; // Default height
+        // Set size based on the actual palette content
+        const canvasWidth = paletteArea.width + this.paletteX * 2;  // Add padding
+        const canvasHeight = paletteArea.height + this.paletteY * 2; // Add padding
+        
+        // Position the canvas to only cover the palette area
+        editorFSM.context.paletteCanvas!.style.position = 'absolute';
+        editorFSM.context.paletteCanvas!.style.left = '0px';
+        editorFSM.context.paletteCanvas!.style.top = '0px';
+        editorFSM.context.paletteCanvas!.style.width = canvasWidth + 'px';
+        editorFSM.context.paletteCanvas!.style.height = canvasHeight + 'px';
+        editorFSM.context.paletteCanvas!.style.zIndex = '20';
+        editorFSM.context.paletteCanvas!.style.backgroundColor = '#2a2a2a'; // Dark background
+        editorFSM.context.paletteCanvas!.style.border = '1px solid #444'; // Subtle border
+        editorFSM.context.paletteCanvas!.style.borderRadius = '4px'; // Rounded corners
+        
+        // Set the actual canvas dimensions
+        editorFSM.context.paletteCanvas!.width = canvasWidth;
+        editorFSM.context.paletteCanvas!.height = canvasHeight;
         
         // Get the context for drawing the palette
         editorFSM.context.paletteCtx = editorFSM.context.paletteCanvas!.getContext('2d', { alpha: true })!; // Use alpha context for transparency
@@ -47,8 +59,20 @@ export class PaletteManager {
         editorFSM.context.paletteCanvas!.addEventListener('mousemove', this.boundHandlePaletteMouseMove);
         editorFSM.context.paletteCanvas!.addEventListener('mouseup', this.boundHandlePaletteMouseUp);
         
-        // Also prevent context menu on the palette canvas
-        editorFSM.context.paletteCanvas!.addEventListener('contextmenu', (e) => e.preventDefault());
+        // Also prevent context menu on the palette canvas, but only within the palette area
+        editorFSM.context.paletteCanvas!.addEventListener('contextmenu', (e) => {
+            const rect = editorFSM.context.paletteCanvas!.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            if (this.isWithinPalette(x, y)) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        });
+        
+        // Draw the initial palette
+        this.drawPalette();
     }
 
 
@@ -58,7 +82,24 @@ export class PaletteManager {
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
         
-        console.log('MapEditor: Palette mouse down at', x, y);
+        console.log('PaletteManager: Palette mouse down at', x, y);
+        
+        // Check if the click is within the palette area
+        if (!this.isWithinPalette(x, y)) {
+            console.log('PaletteManager: Click outside palette area');
+            
+            // If the click is outside the palette area but within the canvas,
+            // we need to explicitly allow the event to propagate to the main canvas
+            if (this.isWithinCanvas(x, y)) {
+                // Create a new event and dispatch it on the main canvas
+                this.forwardEventToMainCanvas(e);
+            }
+            
+            return; // Allow event to propagate to the main canvas
+        }
+        
+        // Stop propagation since we're handling this event
+        e.stopPropagation();
         
         if (e.button === 0) { // Left click
             // Get the tile position from the coordinates
@@ -111,6 +152,21 @@ export class PaletteManager {
         const rect = editorFSM.context.paletteCanvas!.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
+        
+        // Check if the mouse is within the palette area
+        if (!this.isWithinPalette(x, y)) {
+            // If the mouse is outside the palette area but within the canvas,
+            // we need to explicitly allow the event to propagate to the main canvas
+            if (this.isWithinCanvas(x, y)) {
+                // Create a new event and dispatch it on the main canvas
+                this.forwardEventToMainCanvas(e);
+            }
+            
+            return; // Allow event to propagate to the main canvas
+        }
+        
+        // Stop propagation since we're handling this event
+        e.stopPropagation();
         
         if (editorFSM.context.isSelectingTiles && editorFSM.context.selectionStartX !== null && editorFSM.context.selectionStartY !== null) {
             const tilePos = this.getTileFromPaletteCoords(x, y);
@@ -224,6 +280,25 @@ export class PaletteManager {
     }
 
     private handlePaletteMouseUp(e: MouseEvent) {
+        const rect = editorFSM.context.paletteCanvas!.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        // Check if the mouse is within the palette area
+        if (!this.isWithinPalette(x, y)) {
+            // If the mouse is outside the palette area but within the canvas,
+            // we need to explicitly allow the event to propagate to the main canvas
+            if (this.isWithinCanvas(x, y)) {
+                // Create a new event and dispatch it on the main canvas
+                this.forwardEventToMainCanvas(e);
+            }
+            
+            return; // Allow event to propagate to the main canvas
+        }
+        
+        // Stop propagation since we're handling this event
+        e.stopPropagation();
+        
         // If we've been selecting tiles, create a custom brush
         if (editorFSM.context.isSelectingTiles && 
             editorFSM.context.selectionStartX !== null && editorFSM.context.selectionStartY !== null &&
@@ -263,6 +338,14 @@ export class PaletteManager {
     isWithinPalette(x: number, y: number): boolean {
         if (!this.tilemap.isLoaded()) return false;
         
+        const paletteArea = this.getPaletteArea();
+        
+        // Check if the point is within the palette bounds
+        if (x < paletteArea.x || x > paletteArea.x + paletteArea.width || 
+            y < paletteArea.y || y > paletteArea.y + paletteArea.height) {
+            return false;
+        }
+        
         const tilemapHeight = Math.ceil(this.tilemap.width * this.tilemap.height / this.tilemap.width) * 
             (this.tilemap.tileHeight + this.tilemap.spacing) + 10;
         
@@ -280,9 +363,8 @@ export class PaletteManager {
                    tileIndex < this.tilemap.width * this.tilemap.height;
         }
         
-        // Check if within custom brushes section
-        return y <= this.getPaletteHeight() && x >= this.paletteX && 
-               x <= this.paletteX + this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing);
+        // If not in tilemap section but within overall palette bounds, it's in the custom brushes section
+        return true;
     }
 
     handlePaletteClick(x: number, y: number): void {
@@ -440,9 +522,56 @@ export class PaletteManager {
         return tilemapHeight + customBrushesHeight + totalHeight;
     }
 
+    getPaletteArea(): { x: number, y: number, width: number, height: number } {
+        if (!this.tilemap.isLoaded()) {
+            return { x: this.paletteX, y: this.paletteY, width: 0, height: 0 };
+        }
+        
+        // Calculate width based on tilemap dimensions
+        const paletteWidth = this.tilemap.width * (this.tilemap.tileWidth + this.tilemap.spacing);
+        
+        // Use existing method to get height
+        const paletteHeight = this.getPaletteHeight();
+        
+        return {
+            x: this.paletteX,
+            y: this.paletteY,
+            width: paletteWidth,
+            height: paletteHeight
+        };
+    }
+
     drawPalette(): void {
         if (!this.tilemap.isLoaded()) return;
+        
+        // Update the canvas size to match the palette content
+        this.updateCanvasSize();
+        
         const ctx = editorFSM.context.paletteCtx!;
+        
+        // Clear the canvas first with the background color
+        ctx.fillStyle = '#2a2a2a';
+        ctx.fillRect(0, 0, editorFSM.context.paletteCanvas!.width, editorFSM.context.paletteCanvas!.height);
+        
+        // Draw a subtle grid pattern in the background
+        ctx.strokeStyle = '#333333';
+        ctx.lineWidth = 0.5;
+        const gridSize = 10;
+        
+        for (let x = 0; x < editorFSM.context.paletteCanvas!.width; x += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, editorFSM.context.paletteCanvas!.height);
+            ctx.stroke();
+        }
+        
+        for (let y = 0; y < editorFSM.context.paletteCanvas!.height; y += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(editorFSM.context.paletteCanvas!.width, y);
+            ctx.stroke();
+        }
+        
         // Draw built-in brushes (tiles)
         const builtInBrushes = this.brushManager.getBuiltInBrushes();
         for (const brush of builtInBrushes) {
@@ -1119,5 +1248,71 @@ export class PaletteManager {
         }
         
         return null;
+    }
+
+    // Add a method to update the canvas size based on palette content
+    private updateCanvasSize(): void {
+        if (!this.tilemap.isLoaded() || !editorFSM.context.paletteCanvas) return;
+        
+        const paletteArea = this.getPaletteArea();
+        const newWidth = paletteArea.width + this.paletteX * 2;
+        const newHeight = paletteArea.height + this.paletteY * 2;
+        
+        // Only resize if dimensions have changed
+        if (editorFSM.context.paletteCanvas.width !== newWidth || 
+            editorFSM.context.paletteCanvas.height !== newHeight) {
+            
+            console.log('PaletteManager: Resizing palette canvas to', newWidth, 'x', newHeight);
+            
+            // Update both the canvas dimensions and CSS dimensions
+            editorFSM.context.paletteCanvas.width = newWidth;
+            editorFSM.context.paletteCanvas.height = newHeight;
+            editorFSM.context.paletteCanvas.style.width = newWidth + 'px';
+            editorFSM.context.paletteCanvas.style.height = newHeight + 'px';
+            
+            // Ensure the background color is maintained after resize
+            editorFSM.context.paletteCanvas.style.backgroundColor = '#2a2a2a';
+            editorFSM.context.paletteCanvas.style.border = '1px solid #444';
+            editorFSM.context.paletteCanvas.style.borderRadius = '4px';
+        }
+    }
+
+    // Check if a point is within the palette canvas but outside the actual palette area
+    private isWithinCanvas(x: number, y: number): boolean {
+        if (!editorFSM.context.paletteCanvas) return false;
+        
+        return x >= 0 && x < editorFSM.context.paletteCanvas.width && 
+               y >= 0 && y < editorFSM.context.paletteCanvas.height;
+    }
+    
+    // Forward an event to the main canvas
+    private forwardEventToMainCanvas(originalEvent: MouseEvent): void {
+        if (!editorFSM.context.canvas) return;
+        
+        // Get the original coordinates relative to the page
+        const globalX = originalEvent.pageX;
+        const globalY = originalEvent.pageY;
+        
+        // Create a new event with the same properties
+        const newEvent = new MouseEvent(originalEvent.type, {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            detail: originalEvent.detail,
+            screenX: originalEvent.screenX,
+            screenY: originalEvent.screenY,
+            clientX: originalEvent.clientX,
+            clientY: originalEvent.clientY,
+            ctrlKey: originalEvent.ctrlKey,
+            altKey: originalEvent.altKey,
+            shiftKey: originalEvent.shiftKey,
+            metaKey: originalEvent.metaKey,
+            button: originalEvent.button,
+            buttons: originalEvent.buttons,
+            relatedTarget: originalEvent.relatedTarget
+        });
+        
+        // Dispatch the event on the main canvas
+        editorFSM.context.canvas.dispatchEvent(newEvent);
     }
 } 

@@ -247,6 +247,7 @@ class RenderWorker {
         lodQuality: 3,
         batchSize: 16,
         useDirectAtlas: true,
+        showGrid: true,
         showFPS: true,
         debugMode: false
     };
@@ -259,11 +260,11 @@ class RenderWorker {
             console.error('RenderWorker: Unhandled error:', error);
         };
         
-        console.log('RenderWorker: Worker initialized');
+        console.log('RenderWorker: Worker loaded');
 
         self.postMessage({
-            type: 'initialized',
-            message: 'RenderWorker initialized'
+            type: 'loaded',
+            message: 'RenderWorker loaded'
         });
     }
 
@@ -321,6 +322,7 @@ class RenderWorker {
                     break;
                 case 'setShowGrid':
                     this.showGrid = data.showGrid;
+                    this.renderSettings.showGrid = data.showGrid;
                     this.redrawAll();
                     break;
                 case 'setLayerVisibility':
@@ -1132,9 +1134,11 @@ class RenderWorker {
             console.error('RenderWorker: Cannot resize - canvas not available');
             return;
         }
-        
-        console.log('RenderWorker: Resizing canvas to', width, height);
-        
+       
+        if(this.debugMode) {
+            console.log('RenderWorker: Resizing canvas to', width, height);
+        }
+
         // Set resizing state
         this.isResizing = true;
         
@@ -1143,38 +1147,28 @@ class RenderWorker {
             clearTimeout(this.resizeEndTimeout);
         }
         
-        // Store old dimensions for potential content preservation
-        const oldWidth = this.canvas.width;
-        const oldHeight = this.canvas.height;
-        
         // Resize the canvas
         this.canvas.width = width;
         this.canvas.height = height;
-        
-        // Make sure the context has the right settings
-        if (this.ctx) {
-            this.ctx.imageSmoothingEnabled = false;
-        }
-        
-        // Update the viewport
-        this.updateViewport();
-        
-        // Optimize layer buffer handling - only mark them as dirty
-        // instead of recreating them, as the map dimensions haven't changed
-        for (let i = 0; i < this.layerDirty.length; i++) {
-            this.layerDirty[i] = true;
-        }
-        
-        // Redraw everything
-        this.redrawAll();
+        this.ctx.imageSmoothingEnabled = false;
         
         // Set a timeout to end the resize state
         this.resizeEndTimeout = setTimeout(() => {
+            // Update the viewport
+            this.updateViewport();
+            
+            // Optimize layer buffer handling - only mark them as dirty
+            // instead of recreating them, as the map dimensions haven't changed
+            for (let i = 0; i < this.layerDirty.length; i++) {
+                this.layerDirty[i] = true;
+            }
             this.isResizing = false;
             this.redrawAll(); // Full quality redraw when resize is complete
             this.resizeEndTimeout = null;
-            console.log('RenderWorker: Resize operation completed');
-        }, 200) as unknown as number;
+            if(this.debugMode) {
+                console.log('RenderWorker: Resize operation completed');
+            }
+        }, 50) as unknown as number;
     }
 
     private async initialize(
@@ -2244,6 +2238,7 @@ class RenderWorker {
         this.lodThreshold = settings.lodThreshold;
         this.lodQuality = settings.lodQuality;
         this.useDirectAtlas = settings.useDirectAtlas;
+        this.showGrid = settings.showGrid;
         this.debugMode = settings.debugMode;
         
         // Mark all LOD canvases as dirty to force regeneration

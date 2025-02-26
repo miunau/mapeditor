@@ -19,30 +19,13 @@
     const url = `${base}/tilemap.png`;
 
     onMount(() => {
-        setTimeout(() => {
-            console.log('Initializing editor');
-            editorFSM.send('init', {
-                canvas: editorCanvas,
-                container: editorContainer,
-                paletteCanvas: paletteCanvas,
-                debug: true,
-            });
-        }, 500);
+        editorFSM.send('init', {
+            canvas: editorCanvas,
+            container: editorContainer,
+            paletteCanvas: paletteCanvas,
+            debug: true,
+        });
     });
-
-    $effect(() => {
-        /*
-        if (editorCanvas) {
-            editorStore.setCanvas(editorCanvas);
-            if (!editor) {  // Only create editor if it doesn't exist
-                editor = new ReactiveMapEditor(editorCanvas, mapWidth, mapHeight);
-                editorStore.setEditor(editor);
-                initEditor();
-            }
-        }
-        */
-    });
-
 </script>
 
 <svelte:head>

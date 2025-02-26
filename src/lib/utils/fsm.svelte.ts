@@ -96,6 +96,13 @@ export class FSM<
     }
 
     private async transition(newState: keyof StateType, context: Partial<ContextType> = {}): Promise<void> {
+        // Skip transition if we're transitioning to the same state and there's no enter function
+        if (this.state === newState && !this.states[newState].enter) {
+            // Still update the context
+            this.context = { ...this.context, ...context };
+            return;
+        }
+
         this.context = { ...this.context, ...context };
         this.log(`TRANSITION: "${String(this.state)}" to "${String(newState)}"`);
         

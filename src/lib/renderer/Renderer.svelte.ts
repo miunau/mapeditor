@@ -9,20 +9,23 @@
 import type { MapData, MapDataManager } from '$lib/managers/MapDataManager';
 import type { RenderSettings } from '$lib/utils/settings';
 import type { DrawOperation } from '$lib/utils/drawing';
+import type { FSM } from '$lib/utils/fsm.svelte';
+import type { EditorContext } from '$lib/state/EditorStore.svelte';
 
 /**
  * Manages optimized rendering of tile-based maps using web workers and OffscreenCanvas
  */
-export class OptimizedRenderer {
+export class Renderer {
     /** The HTML canvas element that will be transferred to the worker */
     private canvas: HTMLCanvasElement;
     /** Reference to the web worker handling rendering */
-    private _worker: Worker | null = null;
+    private worker: Worker | null = null;
     /** Flag indicating if the renderer has been fully initialized */
     private isInitialized = false;
     /** Map data manager */
     private mapDataManager: MapDataManager | null = null;
-    
+    /** FSM */
+    private machine: FSM<EditorContext, any> | null = null;
     // Shared memory for map data
     /** Shared array containing the map tile data */
     private sharedMapData: SharedArrayBuffer | null = null;
@@ -51,17 +54,12 @@ export class OptimizedRenderer {
         zoom: 1
     };
 
-    /**
-     * Get the worker instance
-     * @returns The web worker handling rendering
-     */
-    get worker() { return this._worker as Worker; }
-
     /** Current rendering settings */
     private renderSettings: RenderSettings;
 
     /** Whether debug information should be displayed */
     private debugMode = false;
+
 
     /**
      * Creates a new OptimizedRenderer instance
@@ -69,10 +67,11 @@ export class OptimizedRenderer {
      * @param canvas - The HTML canvas element to render to
      * @param debugMode - Whether to enable debug mode with additional logging
      */
-    constructor(canvas: HTMLCanvasElement, debugMode = false) {
+    constructor(canvas: HTMLCanvasElement, worker: Worker, debugMode = false, machine: FSM<EditorContext, any>) {
         this.canvas = canvas;
+        this.worker = worker;
         this.debugMode = debugMode;
-        
+        this.machine = machine;
         // Initialize render settings with defaults
         this.renderSettings = {
             useLOD: true,
@@ -80,59 +79,38 @@ export class OptimizedRenderer {
             lodQuality: 3,
             batchSize: 16,
             useDirectAtlas: true,
+            showGrid: true,
             showFPS: true,
-            debugMode: debugMode
+            debugMode: this.debugMode
         };
         
         console.log('OptimizedRenderer: Created renderer instance with debug mode:', debugMode);
-
-        // Check if SharedArrayBuffer is available
-        const sharedArrayBufferAvailable = typeof SharedArrayBuffer !== 'undefined';
-        console.log('OptimizedRenderer: SharedArrayBuffer available:', sharedArrayBufferAvailable);
         
-        if (!sharedArrayBufferAvailable) {
-            console.error('OptimizedRenderer: SharedArrayBuffer is not available. This application requires SharedArrayBuffer support.');
-            this.drawDebugPattern('red');
-            return;
-        }
-        
-        // Check if we're cross-origin isolated (needed for SharedArrayBuffer)
-        console.log('OptimizedRenderer: Cross-Origin Isolated:', window.crossOriginIsolated);
-        
-        if (!window.crossOriginIsolated) {
-            console.error('OptimizedRenderer: Cross-Origin Isolation is required. Please ensure proper headers are set on the server.');
-            this.drawDebugPattern('red');
-            return;
-        }
-        
-        try {
-            // Use the Vite-recommended way to import workers
-            const workerUrl = new URL('../workers/RenderWorker.ts', import.meta.url);
-            console.log('OptimizedRenderer: Creating worker with URL:', workerUrl.toString());
+        // Set up worker message handler
+        if (this.worker) {
+            console.log('OptimizedRenderer: Setting up worker message handler');
             
-            // Create the worker with correct module syntax
-            this._worker = new Worker(workerUrl, { type: 'module' });
-            console.log('OptimizedRenderer: Worker created successfully');
+            // Store the original onmessage handler
+            const originalOnMessage = this.worker.onmessage;
             
-            // Add error handling for the worker
-            this._worker.onerror = (e) => {
-                console.error('OptimizedRenderer: Worker error:', e);
-                console.error('OptimizedRenderer: Error details:', {
-                    message: (e as any).message || 'No message',
-                    filename: (e as any).filename || 'No filename',
-                    lineno: (e as any).lineno || 'No line number',
-                    colno: (e as any).colno || 'No column number'
-                });
+            // Set up a new handler that calls both our handler and the original one
+            this.worker.onmessage = (e: MessageEvent) => {
+                // Call our handler
+                this.handleWorkerMessage(e);
                 
-                // Show error visualization on the canvas
-                this.drawDebugPattern('red');
+                // Call the original handler if it exists
+                if (originalOnMessage) {
+                    originalOnMessage.call(this.worker!, e);
+                }
             };
             
-            // Set up worker message handling
-            this._worker.onmessage = this.handleWorkerMessage.bind(this);
-        } catch (error) {
-            console.error('OptimizedRenderer: Failed to create worker:', error);
-            this.drawDebugPattern('red');
+            // Send a test message to the worker
+            this.worker.postMessage({
+                type: 'test',
+                message: 'Hello from Renderer'
+            });
+        } else {
+            console.error('OptimizedRenderer: Worker not available in constructor');
         }
     }
 
@@ -151,6 +129,7 @@ export class OptimizedRenderer {
             
             // Immediately request a full render
             this.redrawAll();
+            this.centerMap();
             return;
         }
         
@@ -235,8 +214,12 @@ export class OptimizedRenderer {
         this.debugMode = settings.debugMode;
         
         // Forward settings to worker
-        if (this._worker && this.isInitialized) {
-            this._worker.postMessage({
+        if (this.worker && this.isInitialized) {
+            // Update grid visibility
+            this.setShowGrid(settings.showGrid);
+            
+            // Forward all settings to worker
+            this.worker.postMessage({
                 type: 'updateRenderSettings',
                 settings: this.renderSettings
             });
@@ -320,9 +303,9 @@ export class OptimizedRenderer {
         }
 
         // Initialize the worker
-        if (!this._worker) {
+        if (!this.worker) {
             console.error('OptimizedRenderer: Cannot initialize - worker not created');
-            this.drawDebugPattern('red');
+            this.drawDebugPattern('yellow');
             return;
         }
         
@@ -342,7 +325,7 @@ export class OptimizedRenderer {
             
             // Send initialization message to worker
             console.log('OptimizedRenderer: Sending initialization message to worker');
-            this._worker.postMessage(
+            this.worker.postMessage(
                 {
                     type: 'initialize',
                     canvas: offscreenCanvas,
@@ -385,15 +368,32 @@ export class OptimizedRenderer {
      * @param zoom - Zoom level
      */
     updateTransform(offsetX: number, offsetY: number, zoom: number) {
+        // Update internal transform
         this.transform.offsetX = offsetX;
         this.transform.offsetY = offsetY;
         this.transform.zoom = zoom;
         
+        // Update FSM context to keep it in sync
+        if (this.machine && this.machine.context) {
+            this.machine.context.offsetX = offsetX;
+            this.machine.context.offsetY = offsetY;
+            this.machine.context.zoomLevel = zoom;
+        }
+        
         // Send transform update to worker
-        if (this._worker && this.isInitialized) {
-            this._worker.postMessage({
-                type: 'updateTransform',
-                transform: { offsetX, offsetY, zoom }
+        if (this.worker && this.isInitialized) {
+            try {
+                this.worker.postMessage({
+                    type: 'updateTransform',
+                    transform: { offsetX, offsetY, zoom }
+                });
+            } catch (error) {
+                console.error('Renderer: Error sending message to worker:', error);
+            }
+        } else {
+            console.warn('Renderer: Cannot update transform - worker not initialized', {
+                worker: !!this.worker,
+                isInitialized: this.isInitialized
             });
         }
     }
@@ -407,7 +407,7 @@ export class OptimizedRenderer {
      * @param tileIndex - The new tile index
      */
     updateTile(layer: number, x: number, y: number, tileIndex: number) {
-        if (!this.mapDataManager || !this._worker || !this.updateFlags) {
+        if (!this.mapDataManager || !this.worker || !this.updateFlags) {
             console.error('OptimizedRenderer: Cannot update tile - not initialized');
             return;
         }
@@ -422,7 +422,7 @@ export class OptimizedRenderer {
         Atomics.store(this.updateFlags, layer, 1);
         
         // Notify the worker to redraw the tile
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'redrawTile',
             layer,
             x,
@@ -438,7 +438,7 @@ export class OptimizedRenderer {
      * @param tiles - 2D array of tile indices
      */
     updateRegion(layer: number, area: { x: number; y: number; width: number; height: number }, tiles: number[][]) {
-        if (!this.mapDataManager || !this._worker || !this.updateFlags) {
+        if (!this.mapDataManager || !this.worker || !this.updateFlags) {
             console.error('OptimizedRenderer: Cannot update region - not initialized');
             return;
         }
@@ -466,7 +466,7 @@ export class OptimizedRenderer {
         Atomics.store(this.updateFlags, layer, 1);
         
         // Notify worker to redraw the region
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'redrawRegion',
             layer,
             area
@@ -480,12 +480,10 @@ export class OptimizedRenderer {
      * @param height - New height in pixels
      */
     resize(width: number, height: number) {
-        if (!this.isInitialized || !this._worker) return;
-        
-        console.log('OptimizedRenderer: Resizing canvas to', width, height);
+        if (!this.isInitialized || !this.worker) return;
         
         // Tell worker to resize the canvas
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'resize',
             width,
             height
@@ -496,7 +494,7 @@ export class OptimizedRenderer {
      * Forces a complete redraw of all layers
      */
     redrawAll() {
-        if (!this.isInitialized || !this._worker || !this.updateFlags) return;
+        if (!this.isInitialized || !this.worker || !this.updateFlags) return;
         
         console.log('OptimizedRenderer: Forcing complete redraw of all layers');
         
@@ -506,22 +504,22 @@ export class OptimizedRenderer {
         }
         
         // Tell the worker to redraw all layers
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'redrawAll'
         });
     }
 
     destroy() {
-        if (this._worker) {
+        if (this.worker) {
             // Send a terminate message to the worker to allow it to clean up resources
-            this._worker.postMessage({
+            this.worker.postMessage({
                 type: 'terminate'
             });
             
             // Wait a short time for the worker to clean up before terminating
             setTimeout(() => {
-                this._worker?.terminate();
-                this._worker = null;
+                this.worker?.terminate();
+                this.worker = null;
                 console.log('OptimizedRenderer: Worker terminated');
             }, 100);
         }
@@ -537,9 +535,9 @@ export class OptimizedRenderer {
 
     // Update brush preview in worker
     updateBrushPreview(previewData: any) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'updateBrushPreview',
             ...previewData
         });
@@ -547,18 +545,18 @@ export class OptimizedRenderer {
 
     // Clear brush preview
     clearBrushPreview() {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'clearBrushPreview'
         });
     }
 
     // Set grid visibility
     setShowGrid(showGrid: boolean) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'setShowGrid',
             showGrid
         });
@@ -566,9 +564,9 @@ export class OptimizedRenderer {
 
     // Set layer visibility
     setLayerVisibility(layer: number, visible: boolean) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'setLayerVisibility',
             layer,
             visible
@@ -577,9 +575,9 @@ export class OptimizedRenderer {
 
     // Set current layer and layer visibility mode
     setCurrentLayer(layer: number, showAllLayers: boolean) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'setCurrentLayer',
             data: {
                 layer,
@@ -590,9 +588,9 @@ export class OptimizedRenderer {
 
     // Set continuous animation (normally we want this on for smooth performance)
     setContinuousAnimation(enabled: boolean) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: enabled ? 'startAnimation' : 'stopAnimation'
         });
     }
@@ -613,9 +611,9 @@ export class OptimizedRenderer {
         mapY?: number,
         isPanning?: boolean
     }) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'mouseEvent',
             eventType,
             ...data
@@ -630,9 +628,9 @@ export class OptimizedRenderer {
         altKey: boolean,
         metaKey: boolean
     }) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'keyEvent',
             eventType,
             ...data
@@ -641,9 +639,9 @@ export class OptimizedRenderer {
 
     // Handle painting events
     handlePaintEvent(layer: number, x: number, y: number, tileIndex: number, brushSize: number) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'paintEvent',
             layer,
             x,
@@ -655,9 +653,9 @@ export class OptimizedRenderer {
 
     // Handle painting a region
     handlePaintRegion(layer: number, startX: number, startY: number, width: number, height: number, tileIndex: number) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'paintRegion',
             layer,
             startX,
@@ -670,9 +668,9 @@ export class OptimizedRenderer {
 
     // Handle UI state changes
     handleUIStateChange(stateType: string, data: any) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'uiStateChange',
             stateType,
             data
@@ -680,19 +678,19 @@ export class OptimizedRenderer {
     }
 
     // Register a callback to be called when the worker initialization is complete
-    onInitComplete(callback: () => void) {
-        if (!this._worker) return;
+    onInitComplete(callback: (args: any) => void) {
+        if (!this.worker) return;
         
         const originalHandler = this.handleWorkerMessage.bind(this);
         
         // Create a wrapper that calls both the original handler and our callback
-        this._worker.onmessage = (e: MessageEvent) => {
+        this.worker.onmessage = (e: MessageEvent) => {
             // Call the original handler first
             originalHandler(e);
             
             // If it's an init complete message, call the callback
             if (e.data && e.data.type === 'initComplete') {
-                callback();
+                callback(e.data);
             }
         };
     }
@@ -704,7 +702,7 @@ export class OptimizedRenderer {
         sharedMapData?: SharedArrayBuffer,
         updateFlags?: SharedArrayBuffer
     ): Promise<void> {
-        if (!this.isInitialized || !this._worker) {
+        if (!this.isInitialized || !this.worker) {
             console.error('OptimizedRenderer: Cannot update map dimensions - not initialized');
             return;
         }
@@ -730,7 +728,7 @@ export class OptimizedRenderer {
         
         // Return a promise that resolves when the worker acknowledges the update
         return new Promise<void>((resolve) => {
-            if (!this._worker) {
+            if (!this.worker) {
                 resolve();
                 return;
             }
@@ -739,16 +737,16 @@ export class OptimizedRenderer {
             const messageHandler = (e: MessageEvent) => {
                 if (e.data && e.data.type === 'mapDimensionsUpdated') {
                     // Remove the message handler
-                    this._worker!.removeEventListener('message', messageHandler);
+                    this.worker!.removeEventListener('message', messageHandler);
                     resolve();
                 }
             };
             
             // Add the message handler
-            this._worker.addEventListener('message', messageHandler);
+            this.worker.addEventListener('message', messageHandler);
             
             // Send the message to the worker
-            this._worker.postMessage({
+            this.worker.postMessage({
                 type: 'updateMapDimensions',
                 mapWidth,
                 mapHeight,
@@ -764,11 +762,51 @@ export class OptimizedRenderer {
     }
 
     draw(operation: DrawOperation) {
-        if (!this.isInitialized || !this._worker) return;
+        if (!this.isInitialized || !this.worker) return;
         
-        this._worker.postMessage({
+        this.worker.postMessage({
             type: 'draw',
             operation
+        });
+    }
+
+    // Center the map in the viewport
+    centerMap() {
+        if (!this.canvas || !this.machine) return;
+        
+        console.log('Renderer: Centering map in viewport');
+        
+        // Calculate the center position
+        const canvasWidth = this.canvas.width;
+        const canvasHeight = this.canvas.height;
+        const mapWidthPx = this.mapWidth * this.tileWidth;
+        const mapHeightPx = this.mapHeight * this.tileHeight;
+        
+        // Calculate the offset to center the map
+        const offsetX = (canvasWidth - mapWidthPx * this.transform.zoom) / 2;
+        const offsetY = (canvasHeight - mapHeightPx * this.transform.zoom) / 2;
+        
+        // Update the transform
+        this.transform.offsetX = offsetX;
+        this.transform.offsetY = offsetY;
+        
+        // Update the FSM context to keep it in sync with the renderer
+        if (this.machine && this.machine.context) {
+            this.machine.context.offsetX = offsetX;
+            this.machine.context.offsetY = offsetY;
+        }
+        
+        // Update the renderer
+        this.updateTransform(
+            this.transform.offsetX,
+            this.transform.offsetY,
+            this.transform.zoom
+        );
+        
+        console.log('Renderer: Map centered with transform:', {
+            offsetX: this.transform.offsetX,
+            offsetY: this.transform.offsetY,
+            zoom: this.transform.zoom
         });
     }
 } 
